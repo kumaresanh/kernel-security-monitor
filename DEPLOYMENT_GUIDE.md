@@ -1,25 +1,12 @@
-# 🛡️ Kernel Security Monitor — Guest OS (Linux VM) Deployment Guide
+# 🛡️ Kernel Security Monitor (KSM) — Deployment Guide
 
-This guide walks you through deploying **Kernel Security Monitor** inside a Linux Guest OS / Virtual Machine (Ubuntu, Debian, Fedora, Arch) and connecting it to a **Cloud API LLM Model** (e.g. Groq, Gemini, or NVIDIA NIM).
-
----
-
-## 1. Copy Project to Your Guest OS (VM)
-
-From your host machine, transfer the project folder into your VM:
-
-```bash
-# Option A: Using SSH / SCP
-scp -r kernel-security-monitor user@<VM_IP>:~/kernel-security-monitor
-
-# Option B: Or copy via shared folder in VirtualBox / VMware / KVM
-```
+This guide covers deploying **Kernel Security Monitor** across various environments (Bare-Metal Linux, Linux VMs, or Cloud Instances) and connecting it to Cloud LLM APIs (NVIDIA NIM, Groq, OpenAI) or local Ollama.
 
 ---
 
-## 2. Run the One-Click Deployment Script
+## 1. Quick One-Line Setup (Automated VM / Host Script)
 
-Inside your Guest OS terminal:
+Inside your Linux machine:
 
 ```bash
 cd kernel-security-monitor
@@ -28,65 +15,121 @@ chmod +x scripts/deploy_guest_vm.sh
 ```
 
 This script automatically:
-1. Installs `clang`, `bpftool`, `criu`, `libbpf-dev`, `golang`, and `python3`.
-2. Sets up the Python virtual environment and installs AI dependencies.
-3. Trains the Isolation Forest & Conformal Calibration baseline.
-4. Compiles the eBPF kernel C code (`bpf/sensor.o`, `bpf/lsm.o`) and Go binary.
+1. Installs all kernel & compiler packages (`clang`, `bpftool`, `criu`, `libbpf`, `golang`, `python3`).
+2. Configures the Python virtual environment and installs dependencies (`sidecar/requirements.txt`).
+3. Generates kernel headers (`bpf/vmlinux.h`) and compiles eBPF programs (`bpf/sensor.o`, `bpf/lsm.o`).
+4. Builds the Go executable (`kernel-security-monitor`).
 
 ---
 
-## 3. Connecting a Cloud LLM API (NVIDIA / Groq / OpenAI)
+## 2. Manual Installation Steps
 
-If you are using a **Cloud API Key**:
+### Step A: System Packages
 
-### Option A: Using NVIDIA NIM API
-```bash
-export LLM_API_KEY="nvapi-your-key"
-```
-
-### Option B: Using Groq
-```bash
-export LLM_API_KEY="gsk_your_groq_api_key"
-```
-
-*(If no cloud API key or Ollama is available, Kernel Security Monitor will automatically use its built-in fallback system without failing).*
+* **Arch Linux**:
+  ```bash
+  sudo pacman -S base-devel clang llvm bpftool bpf libbpf go python python-pip criu
+  ```
+* **Ubuntu / Debian (22.04 / 24.04)**:
+  ```bash
+  sudo apt update
+  sudo apt install -y build-essential clang llvm libbpf-dev linux-tools-generic golang python3 python3-pip python3-venv criu bpftool
+  ```
+* **Fedora / RHEL**:
+  ```bash
+  sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool golang python3 python3-pip criu
+  ```
 
 ---
 
-## 4. Starting Kernel Security Monitor Inside Your VM
+### Step B: Python Sidecar & Model Baseline
 
-### Terminal 1: Start the Python ML Scorer Sidecar
 ```bash
-source .venv/bin/activate
-make sidecar
+# 1. Create and activate venv
+python3 -m venv venv
+source venv/bin/activate
+
+# 2. Install ML packages
+pip install -r sidecar/requirements.txt
+
+# 3. Train baseline (generates data/isolation_forest_model.joblib & data/calibration_scores.json)
+make train-baseline
+```
+
+---
+
+### Step C: Build Kernel Security Monitor
+
+```bash
+# Generate vmlinux.h and compile BPF C code:
+make generate
+
+# Compile Go control plane:
+make build
+```
+
+---
+
+## 3. Configuring LLM Models
+
+### Option A: NVIDIA NIM API (Recommended)
+1. Get a free API key from [build.nvidia.com](https://build.nvidia.com/).
+2. Export your key and launch:
+   ```bash
+   export LLM_API_KEY="nvapi-your-key"
+   sudo -E ./kernel-security-monitor --mode observe \
+     --llm-endpoint "https://integrate.api.nvidia.com/v1" \
+     --llm-model "meta/llama-3.1-8b-instruct"
+   ```
+
+### Option B: Groq API (High-Speed Cloud Inference)
+1. Get a key from [console.groq.com](https://console.groq.com/).
+2. Export and launch:
+   ```bash
+   export LLM_API_KEY="gsk_your_key"
+   sudo -E ./kernel-security-monitor --mode observe \
+     --llm-endpoint "https://api.groq.com/openai/v1" \
+     --llm-model "llama-3.1-8b-instant"
+   ```
+
+### Option C: Local Ollama (100% Offline)
+1. Pull model: `ollama pull phi3:mini`
+2. Start server: `ollama serve`
+3. Launch monitor:
+   ```bash
+   sudo -E ./kernel-security-monitor --mode observe \
+     --llm-endpoint "http://localhost:11434" \
+     --llm-model "phi3:mini"
+   ```
+
+---
+
+## 4. Production Run Procedure
+
+### Terminal 1: Start ML Scorer Microservice
+```bash
+cd kernel-security-monitor
+source venv/bin/activate
+python3 sidecar/scorer.py
 ```
 *(Runs on `http://127.0.0.1:8099`)*
 
----
-
-### Terminal 2: Start the Kernel Security Monitor
+### Terminal 2: Start Kernel Security Monitor (Requires Root)
 ```bash
-# Standard mode (with BPF-LSM blocking & Dashboard on port 8080):
-sudo ./kernel-security-monitor --listen :8080
-
-# Or with CRIU sandbox verify enabled:
-sudo ./kernel-security-monitor --listen :8080 --enable-criu
+cd kernel-security-monitor
+export LLM_API_KEY="your-api-key"
+sudo -E ./kernel-security-monitor --mode observe
 ```
 
----
-
-## 5. Accessing the Dashboard from Your Host Browser
-
-To view the interactive D3.js security dashboard from your laptop's browser:
-* Find your VM's IP address: `ip a`
-* In your browser, open: **`http://<VM_IP>:8080`** (or `http://localhost:8080` if using port forwarding).
+### Access Dashboard:
+Open your browser at: **`http://localhost:8080`**
 
 ---
 
-## 6. Running a Demo Attack Simulation
+## 5. Testing & Verification
 
-In a 3rd VM terminal:
+Run the attack demo in Terminal 3:
 ```bash
 sudo bash scripts/demo_attack.sh
 ```
-Watch the live D3 graph turn red, the trust score drop to `0/100`, and the autonomous mitigation activate!
+Watch the live D3 causal graph display the attack lineage, the trust score drop, and the AI Copilot narrate the MITRE ATT&CK techniques.
