@@ -1,23 +1,12 @@
 {
   "known_comms": [
-    "upowerd",
     "chrome",
-    "ThreadPoolForeg",
-    "libuv-worker",
-    "pipewire-pulse",
-    "InputThread",
-    "python3",
     "firefox",
-    "volume.sh"
+    "node",
+    "python3",
+    "code",
+    "git"
   ],
-  "known_pids": [
-    92917,
-    15953,
-    1332,
-    1618,
-    2256,
-    1638,
-    2058
-  ],
-  "unknown_comms": null
+  "known_pids": [],
+  "unknown_comms": []
 }

@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 1100" width="1700" height="1100" style="background:#ffffff; font-family:'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;">
+  <defs>
+    <style>
+      .box-title { font-size: 14px; font-weight: 700; fill: #0f172a; }
+      .box-sub { font-size: 11px; fill: #475569; }
+      .box-detail { font-size: 10.5px; fill: #334155; }
+      .code-text { font-family: 'Consolas', 'Courier New', monospace; font-size: 10.5px; font-weight: 600; fill: #0f172a; }
+      .tag-pill { font-size: 9px; font-weight: 700; font-family: monospace; }
+      .section-hdr { font-size: 12px; font-weight: 800; fill: #ffffff; letter-spacing: 0.8px; }
+    </style>
+    <marker id="arr-main" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#0f172a"/>
+    </marker>
+    <marker id="arr-red" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <rect x="40" y="25" width="1620" height="65" rx="6" fill="#0f172a"/>
+  <text x="65" y="64" font-size="22" font-weight="800" fill="#ffffff" letter-spacing="0.5">KERNEL SECURITY MONITOR (KSM)</text>
+  <text x="505" y="63" font-size="14" font-weight="500" fill="#94a3b8">|</text>
+  <text x="525" y="63" font-size="13" font-weight="600" fill="#38bdf8">End-to-End Autonomous System Architecture &amp; Data Pipeline</text>
+  <rect x="1400" y="42" width="235" height="30" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+  <text x="1415" y="62" font-size="11" font-family="monospace" font-weight="600" fill="#38bdf8">Linux 6.x/7.x + eBPF CO-RE</text>
+  <g transform="translate(40, 110)">
+    <rect width="1620" height="155" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="280" height="26" rx="4" fill="#334155"/>
+    <text x="12" y="18" class="section-hdr">STAGE 1: KERNEL-LEVEL TELEMETRY &amp; HOOKS</text>
+    <rect x="25" y="42" width="460" height="95" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="390" y="48" width="85" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="396" y="61" class="tag-pill" fill="#334155">C / Clang-16</text>
+    <text x="40" y="64" class="box-title">eBPF Tracepoint Probes (CO-RE)</text>
+    <text x="40" y="82" class="box-sub">Non-invasive system call interception in kernel space</text>
+    <rect x="40" y="92" width="130" height="34" rx="3" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="48" y="113" class="code-text">sys_enter_execve</text>
+    <rect x="180" y="92" width="130" height="34" rx="3" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="188" y="113" class="code-text">sys_enter_openat</text>
+    <rect x="320" y="92" width="150" height="34" rx="3" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="328" y="113" class="code-text">sys_enter_connect</text>
+    <rect x="560" y="42" width="470" height="95" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="940" y="48" width="80" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="948" y="61" class="tag-pill" fill="#334155">Kernel RingBuf</text>
+    <text x="575" y="64" class="box-title">eBPF Ring Buffer Channel</text>
+    <text x="575" y="85" class="box-detail">• Lockless 256 KB memory buffer allocated per-CPU</text>
+    <text x="575" y="103" class="box-detail">• High-throughput event delivery without packet drops</text>
+    <text x="575" y="121" class="box-detail">• Serializes structured binary events: PID, PPID, Comm, Payload</text>
+    <rect x="1105" y="42" width="490" height="95" rx="4" fill="#ffffff" stroke="#dc2626" stroke-width="1.4"/>
+    <rect x="1500" y="48" width="85" height="18" rx="3" fill="#fee2e2"/>
+    <text x="1506" y="61" class="tag-pill" fill="#b91c1c">BPF-LSM Hook</text>
+    <text x="1120" y="64" class="box-title" fill="#991b1b">In-Kernel LSM Denial Hook (ksm_bprm_check)</text>
+    <text x="1120" y="85" class="box-detail">• Intercepts process execution at <tspan font-family="monospace">bprm_check_security</tspan></text>
+    <text x="1120" y="103" class="box-detail">• Looks up target PIDs in <tspan font-family="monospace">deny_exec_map</tspan> hash table</text>
+    <text x="1120" y="121" class="box-detail">• Denies unauthorized execution with <tspan font-family="monospace" font-weight="700" fill="#b91c1c">-EPERM</tspan> in sub-microseconds</text>
+  </g>
+  <g transform="translate(40, 285)">
+    <rect width="1620" height="205" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="310" height="26" rx="4" fill="#0284c7"/>
+    <text x="12" y="18" class="section-hdr">STAGE 2: CONTROL PLANE &amp; PROVENANCE GRAPH</text>
+    <rect x="25" y="42" width="320" height="145" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="260" y="48" width="75" height="18" rx="3" fill="#e0f2fe"/>
+    <text x="268" y="61" class="tag-pill" fill="#0369a1">Go 1.23</text>
+    <text x="40" y="64" class="box-title">eBPF Loader &amp; Poller</text>
+    <text x="40" y="82" class="box-sub">Library: <tspan font-family="monospace">cilium/ebpf</tspan></text>
+    <text x="40" y="105" class="box-detail">• Loads CO-RE objects into kernel</text>
+    <text x="40" y="123" class="box-detail">• Attaches tracepoints &amp; LSM links</text>
+    <text x="40" y="141" class="box-detail">• Continuous background RingBuf reader</text>
+    <text x="40" y="159" class="box-detail">• Deduplication &amp; noise filtering</text>
+    <rect x="405" y="42" width="480" height="145" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="795" y="48" width="80" height="18" rx="3" fill="#e0f2fe"/>
+    <text x="802" y="61" class="tag-pill" fill="#0369a1">Graph Engine</text>
+    <text x="420" y="64" class="box-title">Causal Provenance Graph Engine</text>
+    <text x="420" y="82" class="box-sub">Streaming In-Memory Directed Acyclic Graph (DAG)</text>
+    <text x="420" y="105" class="box-detail">• <tspan font-weight="700">Nodes</tspan>: Process (PID/PPID), File Paths, Network Sockets (IP:Port)</text>
+    <text x="420" y="123" class="box-detail">• <tspan font-weight="700">Edges</tspan>: <tspan font-family="monospace">EXEC_CHILD</tspan>, <tspan font-family="monospace">OPEN_READ</tspan>, <tspan font-family="monospace">OPEN_WRITE</tspan>, <tspan font-family="monospace">CONNECT_SOCKET</tspan></text>
+    <text x="420" y="141" class="box-detail">• Maintains continuous historical lineage from process creation</text>
+    <text x="420" y="159" class="box-detail">• Enables sub-graph context extraction for security reasoning</text>
+    <rect x="945" y="42" width="650" height="145" rx="4" fill="#ffffff" stroke="#0284c7" stroke-width="1.4"/>
+    <rect x="1505" y="48" width="80" height="18" rx="3" fill="#e0f2fe"/>
+    <text x="1512" y="61" class="tag-pill" fill="#0369a1">Feature Extractor</text>
+    <text x="965" y="64" class="box-title">4-Dimensional Behavioral Vector Extractor</text>
+    <text x="965" y="82" class="box-sub">Translates live graph relationships into numerical behavioral feature vectors</text>
+    <rect x="965" y="95" width="145" height="75" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="975" y="113" font-size="11" font-weight="700" fill="#0f172a">1. Fan-Out Degree</text>
+    <text x="975" y="130" font-size="9.5" fill="#475569">Rate of new distinct</text>
+    <text x="975" y="144" font-size="9.5" fill="#475569">files &amp; sockets opened</text>
+    <rect x="1120" y="95" width="145" height="75" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="1130" y="113" font-size="11" font-weight="700" fill="#0f172a">2. Edge Entropy</text>
+    <text x="1130" y="130" font-size="9.5" fill="#475569">Shannon entropy of</text>
+    <text x="1130" y="144" font-size="9.5" fill="#475569">resource interaction types</text>
+    <rect x="1275" y="95" width="155" height="75" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="1285" y="113" font-size="11" font-weight="700" fill="#0f172a">3. N-Gram Rarity</text>
+    <text x="1285" y="130" font-size="9.5" fill="#475569">Syscall tri-gram rarity</text>
+    <text x="1285" y="144" font-size="9.5" fill="#0f172a" font-family="monospace">write→chmod→exec</text>
+    <rect x="1440" y="95" width="145" height="75" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="1450" y="113" font-size="11" font-weight="700" fill="#0f172a">4. Ancestry Depth</text>
+    <text x="1450" y="130" font-size="9.5" fill="#475569">Execution lineage</text>
+    <text x="1450" y="144" font-size="9.5" fill="#475569">distance from systemd</text>
+  </g>
+  <g transform="translate(40, 510)">
+    <rect width="1620" height="155" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="350" height="26" rx="4" fill="#7c3aed"/>
+    <text x="12" y="18" class="section-hdr">STAGE 3: STATISTICAL ANOMALY &amp; CONFORMAL BOUNDS</text>
+    <rect x="25" y="42" width="460" height="95" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="385" y="48" width="90" height="18" rx="3" fill="#ede9fe"/>
+    <text x="391" y="61" class="tag-pill" fill="#6d28d9">Scikit-Learn</text>
+    <text x="40" y="64" class="box-title">Isolation Forest Anomaly Model</text>
+    <text x="40" y="85" class="box-detail">• Unsupervised decision tree ensemble evaluating 4D feature vector</text>
+    <text x="40" y="103" class="box-detail">• Isolates statistical anomalies based on tree path length</text>
+    <text x="40" y="121" class="box-detail">• Pre-trained on empirical benign developer &amp; system workflows</text>
+    <rect x="545" y="42" width="510" height="95" rx="4" fill="#ffffff" stroke="#7c3aed" stroke-width="1.4"/>
+    <rect x="965" y="48" width="80" height="18" rx="3" fill="#ede9fe"/>
+    <text x="972" y="61" class="tag-pill" fill="#6d28d9">Conformal AI</text>
+    <text x="560" y="64" class="box-title">Conformal Prediction Calibrator</text>
+    <text x="560" y="85" class="box-detail">• Calibrates raw scores against offline non-conformity baseline</text>
+    <text x="560" y="103" class="box-detail">• Yields valid mathematical <tspan font-weight="700">p-value</tspan> with guaranteed False Positive bounds</text>
+    <text x="560" y="121" class="box-detail">• Computes dynamic <tspan font-weight="700" fill="#0f172a">Trust Score (0–100%)</tspan>: High Trust (&gt;75%), Low Trust (&lt;30%)</text>
+    <rect x="1115" y="42" width="480" height="95" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="1490" y="48" width="95" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="1496" y="61" class="tag-pill" fill="#334155">data/user_trust.json</text>
+    <text x="1130" y="64" class="box-title">System Whitelist &amp; User Trust Registry</text>
+    <text x="1130" y="85" class="box-detail">• Built-in bypass for Linux daemons: <tspan font-family="monospace">dwm, pipewire, udev-worker</tspan></text>
+    <text x="1130" y="103" class="box-detail">• Operator 'Mark Known' decisions stored persistently on disk</text>
+    <text x="1130" y="121" class="box-detail">• Eliminates repeat false alarms across reboots and service restarts</text>
+  </g>
+  <g transform="translate(40, 685)">
+    <rect width="1620" height="175" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="330" height="26" rx="4" fill="#059669"/>
+    <text x="12" y="18" class="section-hdr">STAGE 4: RESPONSE ENGINE &amp; MITIGATION PATHS</text>
+    <rect x="25" y="42" width="330" height="115" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="40" y="68" class="box-title">🛡️ Path A: OBSERVE Mode</text>
+    <text x="40" y="90" class="box-detail">• Logs anomaly score to audit log</text>
+    <text x="40" y="108" class="box-detail">• Updates D3 graph &amp; live dashboard</text>
+    <text x="40" y="126" class="box-detail">• No process interruption</text>
+    <text x="40" y="144" font-size="9.5" font-weight="600" fill="#475569">Action: None (Monitoring)</text>
+    <rect x="390" y="42" width="370" height="115" rx="4" fill="#ffffff" stroke="#f59e0b" stroke-width="1.4"/>
+    <rect x="675" y="48" width="75" height="18" rx="3" fill="#fef3c7"/>
+    <text x="682" y="61" class="tag-pill" fill="#b45309">Non-Destructive</text>
+    <text x="405" y="68" class="box-title" fill="#b45309">⏸ Path B: PAUSE Mode (Unique)</text>
+    <text x="405" y="90" class="box-detail">• Sends atomic <tspan font-family="monospace" font-weight="700">SIGSTOP</tspan> to suspicious process</text>
+    <text x="405" y="108" class="box-detail">• Freezes execution in RAM without killing process</text>
+    <text x="405" y="126" class="box-detail">• Displays amber banner on dashboard for triage</text>
+    <text x="405" y="144" font-size="9.5" font-weight="700" fill="#b45309">Action: Suspend &amp; Await Operator Approval</text>
+    <rect x="795" y="42" width="410" height="115" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="1115" y="48" width="80" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="1122" y="61" class="tag-pill" fill="#334155">CRIU Sandbox</text>
+    <text x="810" y="68" class="box-title">Deep Sandbox Verification (Optional)</text>
+    <text x="810" y="90" class="box-detail">• Snapshots process memory via <tspan font-family="monospace">criu dump</tspan></text>
+    <text x="810" y="108" class="box-detail">• Replays in isolated <tspan font-family="monospace">netns</tspan> with virtual sinkhole</text>
+    <text x="810" y="126" class="box-detail">• Proves C2 callback intention before taking action</text>
+    <text x="810" y="144" font-size="9.5" font-weight="600" fill="#0f172a">Action: Checkpoint → Sandbox Replay → Confirm</text>
+    <rect x="1240" y="42" width="355" height="115" rx="4" fill="#ffffff" stroke="#dc2626" stroke-width="1.4"/>
+    <rect x="1505" y="48" width="80" height="18" rx="3" fill="#fee2e2"/>
+    <text x="1512" y="61" class="tag-pill" fill="#b91c1c">Enforcement</text>
+    <text x="1255" y="68" class="box-title" fill="#b91c1c">⚡ Path C: ENFORCE Mode</text>
+    <text x="1255" y="90" class="box-detail">• BPF-LSM denies exec via <tspan font-family="monospace">deny_exec_map</tspan></text>
+    <text x="1255" y="108" class="box-detail">• Fallback to immediate <tspan font-family="monospace" font-weight="700">SIGKILL</tspan> termination</text>
+    <text x="1255" y="126" class="box-detail">• Audits termination event in Action Log</text>
+    <text x="1255" y="144" font-size="9.5" font-weight="700" fill="#b91c1c">Action: Immediate Threat Neutralization</text>
+  </g>
+  <g transform="translate(40, 880)">
+    <rect width="1620" height="190" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="360" height="26" rx="4" fill="#1e293b"/>
+    <text x="12" y="18" class="section-hdr">STAGE 5: PRESENTATION &amp; CONVERSATIONAL COPILOT</text>
+    <rect x="25" y="42" width="510" height="130" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="440" y="48" width="85" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="448" y="61" class="tag-pill" fill="#334155">Port 8080</text>
+    <text x="40" y="66" class="box-title">Web SOC Dashboard (D3.js &amp; CSS)</text>
+    <text x="40" y="88" class="box-detail">• <tspan font-weight="700">Process Table &amp; Search</tspan>: Live PID/Comm search &amp; filter</text>
+    <text x="40" y="106" class="box-detail">• <tspan font-weight="700">D3.js Provenance Graph</tspan>: Interactive force-directed node graph</text>
+    <text x="40" y="124" class="box-detail">• <tspan font-weight="700">Process Inspector</tspan>: Detail card showing sockets, files &amp; actions</text>
+    <text x="40" y="142" class="box-detail">• <tspan font-weight="700">Real-Time Action Log</tspan>: Real-time audit history of every kill/pause/trust</text>
+    <text x="40" y="160" class="box-detail">• <tspan font-weight="700">Mode Selector</tspan>: Live switching between Observe, Pause, Enforce</text>
+    <rect x="565" y="42" width="510" height="130" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="965" y="48" width="100" height="18" rx="3" fill="#e2e8f0"/>
+    <text x="971" y="61" class="tag-pill" fill="#334155">NVIDIA NIM / LLM</text>
+    <text x="580" y="66" class="box-title">Interactive AI Security Copilot</text>
+    <text x="580" y="88" class="box-detail">• <tspan font-weight="700">Model</tspan>: NVIDIA NIM API (<tspan font-family="monospace">meta/llama-3.1-8b-instruct</tspan>) / OpenAI</text>
+    <text x="580" y="106" class="box-detail">• <tspan font-weight="700">MITRE ATT&amp;CK Mapping</tspan>: Grounds analysis in 12 core Linux TTPs</text>
+    <text x="580" y="124" class="box-detail">• <tspan font-weight="700">Contextual Ingestion</tspan>: Live graph sub-trees &amp; action history</text>
+    <text x="580" y="142" class="box-detail">• <tspan font-weight="700">Zero-Latency Fallback</tspan>: Template engine when cloud API is offline</text>
+    <text x="580" y="160" class="box-detail">• <tspan font-weight="700">Security Analyst Triage</tspan>: Explains why processes were flagged</text>
+    <rect x="1105" y="42" width="490" height="130" rx="4" fill="#ffffff" stroke="#0f172a" stroke-width="1.3"/>
+    <rect x="1500" y="48" width="85" height="18" rx="3" fill="#f1f5f9"/>
+    <text x="1506" y="61" class="tag-pill" fill="#0f172a">Dispatcher</text>
+    <text x="1120" y="66" class="box-title">Natural Language OS Command Dispatch</text>
+    <text x="1120" y="86" class="box-sub">Converts analyst conversation into direct kernel-level actions</text>
+    <rect x="1120" y="96" width="460" height="66" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="1132" y="114" font-size="10.5" font-family="monospace" font-weight="700" fill="#0f172a">"block all below 30"</text>
+    <text x="1295" y="114" font-size="10.5" fill="#334155">→ Bulk SIGSTOP to matching PIDs</text>
+    <text x="1132" y="132" font-size="10.5" font-family="monospace" font-weight="700" fill="#0f172a">"trust python3"</text>
+    <text x="1295" y="132" font-size="10.5" fill="#16a34a">→ Sets trust=100 &amp; saves to disk</text>
+    <text x="1132" y="150" font-size="10.5" font-family="monospace" font-weight="700" fill="#0f172a">"resume 1234" / "kill 1234"</text>
+    <text x="1295" y="150" font-size="10.5" fill="#dc2626">→ Sends SIGCONT / SIGKILL signal</text>
+  </g>
+  <line x1="485" y1="200" x2="550" y2="200" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <path d="M 795 247 L 795 270 L 200 270 L 200 327" fill="none" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <line x1="345" y1="395" x2="395" y2="395" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <line x1="885" y1="395" x2="935" y2="395" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <path d="M 1270 430 L 1270 495 L 255 495 L 255 552" fill="none" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <line x1="485" y1="600" x2="535" y2="600" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <line x1="1055" y1="600" x2="1105" y2="600" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <path d="M 795 647 L 795 675 L 190 675 L 190 727" fill="none" stroke="#0f172a" stroke-width="1.6" marker-end="url(#arr-main)"/>
+  <path d="M 795 675 L 575 675 L 575 727" fill="none" stroke="#b45309" stroke-width="1.6" marker-end="url(#arr-main)"/>
+  <path d="M 795 675 L 1000 675 L 1000 727" fill="none" stroke="#0f172a" stroke-width="1.6" marker-end="url(#arr-main)"/>
+  <path d="M 795 675 L 1415 675 L 1415 727" fill="none" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arr-red)"/>
+  <path d="M 1415 727 L 1415 240" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arr-red)"/>
+  <path d="M 575 840 L 575 870 L 280 870 L 280 922" fill="none" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <path d="M 575 870 L 820 870 L 820 922" fill="none" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+  <path d="M 575 870 L 1350 870 L 1350 922" fill="none" stroke="#0f172a" stroke-width="1.8" marker-end="url(#arr-main)"/>
+</svg>
