@@ -1,0 +1,25 @@
+# Binaries
+kernel-security-monitor
+ksm
+sentinel
+
+# eBPF compiled objects
+bpf/*.o
+
+# Python virtual environment & caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs & Runtime files
+*.log
+events.jsonl
+sentinel-events.jsonl
+/tmp/ksm-criu
+/tmp/ksm-demo-*
+
+# Environment variables & keys
+.env
+.env.*
