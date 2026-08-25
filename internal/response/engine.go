@@ -658,25 +658,44 @@ func isKnownProcess(comm string) bool {
 		"cp": true, "mv": true, "rm": true, "mkdir": true, "rmdir": true,
 		"ln": true, "chmod": true, "chown": true, "touch": true,
 		"tee": true, "xdg-open": true, "xclip": true, "dmesg": true,
+		// Desktop utilities & X11 tools
+		"volume.sh": true, "dbus-send": true, "xprop": true, "xsetroot": true,
+		"feh": true, "picom": true, "slstatus": true,
+		"brightness.sh": true, "battery.sh": true, "wifi.sh": true,
+		// Kernel Security Monitor itself (including 15-char comm truncation)
+		"kernel-security-monitor": true, "kernel-security": true, "ksm": true, "scorer": true, "scorer.py": true,
 		// Worker threads (kernel/udev/systemd internal workers shown with parentheses)
 		"(udev-worker)": true, "(sd-worker)": true, "(systemd)": true,
 		// Thread pool names (from browsers, JVM, etc.)
 		"ThreadPoolForeg": true, "ThreadPoolSingl": true, "JavaFX Applicat": true,
 		"libuv-worker": true, "InputThread": true, "CompositorTileW": true,
 		"Chrome_ChildIOT": true, "VizCompositorTh": true, "AudioOutputDevi": true,
-		// Kernel Security Monitor itself
-		"kernel-security-monitor": true, "ksm": true, "scorer": true, "scorer.py": true,
 	}
 
 	if knownExact[comm] {
 		return true
 	}
 
-	// Prefix match for daemon families and Chrome subprocess variants
+	// Prefix-based matches for dynamic thread / worker / shell script names
 	knownPrefixes := []string{
-		"systemd-", "udev", "gdm", "lightdm", "sddm",
-		"gnome-", "cinnamon-", "xfce4-", "mate-", "lxqt-",
-		"Chrome_", "chrome-", "firefox-", "electron",
+		"blocking-",
+		"volume",
+		"Thread",
+		"Worker",
+		"libuv",
+		"Input",
+		"Compositor",
+		"Audio",
+		"Viz",
+		"Chrome_",
+		"sd-",
+		"systemd-",
+		"pipewire",
+		"wireplumber",
+		"pulseaudio",
+		"gvfs",
+		"dbus",
+		"electron",
 		"language_server", "language-server",
 		"antigravity", "code-", "vscode-",
 		"npm ", "node ", "python",
