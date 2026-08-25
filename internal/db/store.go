@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type ProcessRecord struct {
 	Decisions      []DecisionSummary `json:"decisions,omitempty"`
 	IsPaused       bool              `json:"is_paused"`
 	IsKilled       bool              `json:"is_killed"`
+	EndedAt        time.Time         `json:"ended_at,omitempty"`
 }
 
 // AttackPattern describes an identified suspicious or malicious sequence
@@ -399,6 +401,7 @@ func (s *Store) RecordDecision(pid uint32, comm string, trust float64, status, a
 	if action == "kill" || action == "verified_kill" {
 		proc.IsKilled = true
 		proc.Status = "killed"
+		proc.EndedAt = now
 	}
 
 	proc.Decisions = append(proc.Decisions, DecisionSummary{
@@ -407,6 +410,31 @@ func (s *Store) RecordDecision(pid uint32, comm string, trust float64, status, a
 		TrustScore:  trust,
 		TechniqueID: techniqueID,
 	})
+}
+
+// GetProcessSnapshot returns a copy suitable for an HTTP response. It keeps
+// process evidence available to the inspector without exposing Store internals.
+func (s *Store) GetProcessSnapshot(pid uint32) (*ProcessRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	proc, ok := s.processes[pid]
+	if !ok {
+		return nil, false
+	}
+	copyProc := *proc
+	copyProc.AccessedFiles = make(map[string]int, len(proc.AccessedFiles))
+	for path, count := range proc.AccessedFiles {
+		copyProc.AccessedFiles[path] = count
+	}
+	copyProc.NetworkSockets = make(map[string]int, len(proc.NetworkSockets))
+	for socket, count := range proc.NetworkSockets {
+		copyProc.NetworkSockets[socket] = count
+	}
+	copyProc.SpawnedSubPIDs = append([]uint32(nil), proc.SpawnedSubPIDs...)
+	copyProc.AttackPatterns = append([]AttackPattern(nil), proc.AttackPatterns...)
+	copyProc.Decisions = append([]DecisionSummary(nil), proc.Decisions...)
+	return &copyProc, true
 }
 
 // RecordConversation persists an AI Q&A exchange
@@ -462,22 +490,15 @@ func (s *Store) GetProcessTree() []*ProcessTreeNode {
 	// Map of PID -> node
 	nodes := make(map[uint32]*ProcessTreeNode)
 	for pid, p := range s.processes {
-		// Convert accessed files to list
-		var topFiles []string
-		for f := range p.AccessedFiles {
-			topFiles = append(topFiles, f)
-			if len(topFiles) >= 8 {
-				break
-			}
+		// The interactive tree is a live process view. Historical process
+		// provenance stays in the database/search path, not in this large DOM.
+		if p.IsKilled || !processStillExists(pid) {
+			continue
 		}
-
-		var topSockets []string
-		for sock := range p.NetworkSockets {
-			topSockets = append(topSockets, sock)
-			if len(topSockets) >= 6 {
-				break
-			}
-		}
+		// Keep access evidence deterministic. Map iteration otherwise makes the
+		// hierarchy appear to change even when the underlying process did not.
+		topFiles := topEvidence(p.AccessedFiles, 8)
+		topSockets := topEvidence(p.NetworkSockets, 6)
 
 		nodes[pid] = &ProcessTreeNode{
 			PID:            p.PID,
@@ -511,17 +532,56 @@ func (s *Store) GetProcessTree() []*ProcessTreeNode {
 		rootNodes = append(rootNodes, node)
 	}
 
-	// Sort roots by most active / threats first
-	sort.Slice(rootNodes, func(i, j int) bool {
-		iThreats := len(rootNodes[i].AttackPatterns)
-		jThreats := len(rootNodes[j].AttackPatterns)
+	// Sort every level, not only roots. A stable order makes a deep process
+	// family usable while telemetry is arriving continuously.
+	sortProcessTree(rootNodes)
+
+	return rootNodes
+}
+
+func topEvidence(values map[string]int, limit int) []string {
+	type evidence struct {
+		name  string
+		count int
+	}
+	items := make([]evidence, 0, len(values))
+	for name, count := range values {
+		items = append(items, evidence{name: name, count: count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count != items[j].count {
+			return items[i].count > items[j].count
+		}
+		return items[i].name < items[j].name
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.name)
+	}
+	return out
+}
+
+func sortProcessTree(nodes []*ProcessTreeNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		iThreats := len(nodes[i].AttackPatterns)
+		jThreats := len(nodes[j].AttackPatterns)
 		if iThreats != jThreats {
 			return iThreats > jThreats
 		}
-		return rootNodes[i].SyscallCount > rootNodes[j].SyscallCount
+		if nodes[i].SyscallCount != nodes[j].SyscallCount {
+			return nodes[i].SyscallCount > nodes[j].SyscallCount
+		}
+		if nodes[i].Comm != nodes[j].Comm {
+			return nodes[i].Comm < nodes[j].Comm
+		}
+		return nodes[i].PID < nodes[j].PID
 	})
-
-	return rootNodes
+	for _, node := range nodes {
+		sortProcessTree(node.Children)
+	}
 }
 
 // GetAttackPatterns returns all detected MITRE ATT&CK patterns across processes
@@ -549,93 +609,105 @@ func (s *Store) GetProductionGraph() ProductionGraphData {
 	nodeSet := make(map[string]bool)
 	threatCount := 0
 
-	// 1. Group processes by Parent/Daemon clusters
+	// The graph intentionally shows only live security narratives. The process
+	// monitor remains the complete inventory; keeping normal process activity in
+	// both places makes causality unreadable and makes the dashboard lag.
+	live := make(map[uint32]bool, len(s.processes))
 	for pid, p := range s.processes {
-		if p.IsKilled && time.Since(p.LastSeen) > 30*time.Second {
+		if !p.IsKilled && processStillExists(pid) {
+			live[pid] = true
+		}
+	}
+	visible := make(map[uint32]bool)
+	contextParent := make(map[uint32]bool)
+	for pid, p := range s.processes {
+		if !live[pid] {
 			continue
 		}
-
-		hasThreat := len(p.AttackPatterns) > 0 || p.TrustScore < 50 || p.Status == "suspicious" || p.IsPaused
+		hasThreat := isGraphThreat(p)
 		if hasThreat {
 			threatCount++
 		}
+		if !hasThreat {
+			continue
+		}
 
+		visible[pid] = true
+		// Show enough ancestry to explain where the interesting process came from,
+		// without adding every unrelated sibling in the process tree.
+		parentPID := p.PPID
+		for level := 0; level < 2 && parentPID > 0 && live[parentPID]; level++ {
+			visible[parentPID] = true
+			contextParent[parentPID] = true
+			parentPID = s.processes[parentPID].PPID
+		}
+	}
+
+	pids := make([]uint32, 0, len(visible))
+	for pid := range visible {
+		pids = append(pids, pid)
+	}
+	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+
+	for _, pid := range pids {
+		p := s.processes[pid]
+		nodeType := "process"
+		if isGraphThreat(p) {
+			nodeType = "threat"
+		} else if contextParent[pid] {
+			nodeType = "parent_process"
+		}
 		pNodeID := fmt.Sprintf("proc:%d", pid)
-		if !nodeSet[pNodeID] {
-			nodeType := "process"
-			if hasThreat {
-				nodeType = "threat"
-			}
-			nodes = append(nodes, ProductionGraphNode{
-				ID:         pNodeID,
-				Label:      fmt.Sprintf("%s [%d]", p.Comm, pid),
-				Type:       nodeType,
-				Trust:      p.TrustScore,
-				PID:        pid,
-				Comm:       p.Comm,
-				PPID:       p.PPID,
-				Status:     p.Status,
-				EventCount: int(p.SyscallCount),
-			})
-			nodeSet[pNodeID] = true
-		}
+		nodes = append(nodes, ProductionGraphNode{
+			ID:         pNodeID,
+			Label:      fmt.Sprintf("%s [%d]", p.Comm, pid),
+			Type:       nodeType,
+			Trust:      p.TrustScore,
+			PID:        pid,
+			Comm:       p.Comm,
+			PPID:       p.PPID,
+			Status:     p.Status,
+			EventCount: int(p.SyscallCount),
+		})
+		nodeSet[pNodeID] = true
+	}
 
-		// Connect parent to child
-		if p.PPID > 0 && p.PPID != pid {
+	for _, pid := range pids {
+		p := s.processes[pid]
+		pNodeID := fmt.Sprintf("proc:%d", pid)
+		if visible[p.PPID] && p.PPID != pid {
 			parentID := fmt.Sprintf("proc:%d", p.PPID)
-			if parent, parentExists := s.processes[p.PPID]; parentExists {
-				if !nodeSet[parentID] {
-					nodes = append(nodes, ProductionGraphNode{
-						ID:         parentID,
-						Label:      fmt.Sprintf("%s [%d]", parent.Comm, parent.PID),
-						Type:       "parent_process",
-						Trust:      parent.TrustScore,
-						PID:        parent.PID,
-						Comm:       parent.Comm,
-						Status:     parent.Status,
-						EventCount: int(parent.SyscallCount),
-					})
-					nodeSet[parentID] = true
-				}
-				edgeSev := "normal"
-				if hasThreat {
-					edgeSev = "critical"
-				}
-				edges = append(edges, ProductionGraphEdge{
-					Source:   parentID,
-					Target:   pNodeID,
-					Type:     "FORK_EXEC",
-					Weight:   1,
-					Severity: edgeSev,
-					Label:    "spawns",
-				})
+			edgeSev := "normal"
+			if isGraphThreat(p) {
+				edgeSev = "critical"
 			}
+			edges = append(edges, ProductionGraphEdge{Source: parentID, Target: pNodeID, Type: "FORK_EXEC", Weight: 1, Severity: edgeSev, Label: "spawns"})
 		}
 
-		// Connect network sockets if non-empty
-		for sock, cnt := range p.NetworkSockets {
-			sockID := fmt.Sprintf("sock:%s", sock)
-			if !nodeSet[sockID] {
+		// Explicit ATT&CK evidence makes the graph explainable: the operator can
+		// see exactly which technique caused this process to enter the graph.
+		for _, pattern := range p.AttackPatterns {
+			patternID := fmt.Sprintf("pattern:%s", pattern.ID)
+			if !nodeSet[patternID] {
 				nodes = append(nodes, ProductionGraphNode{
-					ID:         sockID,
-					Label:      sock,
-					Type:       "socket",
-					Trust:      100,
-					EventCount: cnt,
+					ID:         patternID,
+					Label:      fmt.Sprintf("%s — %s", pattern.TechniqueID, pattern.PatternType),
+					Type:       "threat",
+					Trust:      p.TrustScore,
+					PID:        p.PID,
+					Comm:       p.Comm,
+					Status:     p.Status,
+					EventCount: 1,
 				})
-				nodeSet[sockID] = true
-			}
-			edgeSev := "normal"
-			if strings.Contains(sock, "4444") || strings.Contains(sock, "1337") || hasThreat {
-				edgeSev = "critical"
+				nodeSet[patternID] = true
 			}
 			edges = append(edges, ProductionGraphEdge{
 				Source:   pNodeID,
-				Target:   sockID,
-				Type:     "CONNECT",
-				Weight:   cnt,
-				Severity: edgeSev,
-				Label:    fmt.Sprintf("%d pkts", cnt),
+				Target:   patternID,
+				Type:     "ATTACK_PATTERN",
+				Weight:   1,
+				Severity: "critical",
+				Label:    "detected",
 			})
 		}
 	}
@@ -644,8 +716,20 @@ func (s *Store) GetProductionGraph() ProductionGraphData {
 		Nodes:        nodes,
 		Edges:        edges,
 		ActiveThreat: threatCount,
-		TotalPIDs:    len(s.processes),
+		TotalPIDs:    len(live),
 	}
+}
+
+func isGraphThreat(p *ProcessRecord) bool {
+	return len(p.AttackPatterns) > 0 || p.TrustScore < 50 || p.Status == "suspicious" || p.IsPaused
+}
+
+func processStillExists(pid uint32) bool {
+	if pid == 0 {
+		return false
+	}
+	_, err := os.Stat(filepath.Join("/proc", strconv.FormatUint(uint64(pid), 10)))
+	return err == nil
 }
 
 // SearchTelemetry provides grounded context to the AI Copilot from the database

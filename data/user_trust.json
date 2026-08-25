@@ -1,12 +1,31 @@
 {
   "known_comms": [
+    "installer.sh",
+    "code",
+    "git",
+    "chrome_crashpad",
+    "c2_backdoor.sh",
+    "amixer",
     "chrome",
     "firefox",
     "node",
+    "check",
+    "udev-event",
     "python3",
-    "code",
-    "git"
+    "brightnessctl",
+    "import",
+    "obs"
   ],
-  "known_pids": [],
-  "unknown_comms": []
+  "known_pids": [
+    306691,
+    304162,
+    308781,
+    1020,
+    146190,
+    146732,
+    2082,
+    306011,
+    130894
+  ],
+  "unknown_comms": null
 }

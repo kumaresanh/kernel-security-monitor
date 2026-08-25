@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,15 +29,201 @@ import (
 	"github.com/kernel-security-monitor/ksm/internal/sensor"
 )
 
+type processMetrics struct {
+	Comm               string    `json:"comm"`
+	PPID               uint32    `json:"ppid"`
+	StartedAt          time.Time `json:"started_at"`
+	RuntimeSeconds     int64     `json:"runtime_seconds"`
+	CPUPercent         float64   `json:"cpu_percent"`
+	MemoryRSSBytes     int64     `json:"memory_rss_bytes"`
+	MemoryVirtualBytes int64     `json:"memory_virtual_bytes"`
+	Threads            int       `json:"threads"`
+	State              string    `json:"state"`
+	User               string    `json:"user"`
+	GPUPercent         *float64  `json:"gpu_percent"`
+}
+
+type cpuSample struct {
+	ticks uint64
+	at    time.Time
+}
+
+type processMetricsSampler struct {
+	mu       sync.Mutex
+	previous map[uint32]cpuSample
+	bootTime time.Time
+}
+
+func newProcessMetricsSampler() *processMetricsSampler {
+	return &processMetricsSampler{previous: make(map[uint32]cpuSample), bootTime: linuxBootTime()}
+}
+
+func linuxBootTime() time.Time {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return time.Time{}
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 2 && fields[0] == "btime" {
+			if seconds, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+				return time.Unix(seconds, 0)
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func (s *processMetricsSampler) read(pid uint32) (processMetrics, bool) {
+	statPath := filepath.Join("/proc", strconv.FormatUint(uint64(pid), 10), "stat")
+	data, err := os.ReadFile(statPath)
+	if err != nil {
+		return processMetrics{}, false
+	}
+	closeParen := strings.LastIndex(string(data), ")")
+	if closeParen < 0 {
+		return processMetrics{}, false
+	}
+	fields := strings.Fields(string(data)[closeParen+1:])
+	if len(fields) < 22 {
+		return processMetrics{}, false
+	}
+	parseUint := func(index int) uint64 { value, _ := strconv.ParseUint(fields[index], 10, 64); return value }
+	ticks := parseUint(11) + parseUint(12)
+	startTicks := parseUint(19)
+	vsize, _ := strconv.ParseInt(fields[20], 10, 64)
+	rssPages, _ := strconv.ParseInt(fields[21], 10, 64)
+	now := time.Now()
+	commStart := strings.Index(string(data), "(")
+	ppid, _ := strconv.ParseUint(fields[1], 10, 32)
+	metrics := processMetrics{
+		Comm: strings.TrimSpace(string(data)[commStart+1 : closeParen]), PPID: uint32(ppid),
+		MemoryRSSBytes: rssPages * int64(os.Getpagesize()), MemoryVirtualBytes: vsize,
+		State: fields[0], GPUPercent: nil,
+	}
+	if !s.bootTime.IsZero() {
+		metrics.StartedAt = s.bootTime.Add(time.Duration(startTicks) * time.Second / 100)
+		metrics.RuntimeSeconds = int64(now.Sub(metrics.StartedAt).Seconds())
+	}
+	statusData, _ := os.ReadFile(filepath.Join("/proc", strconv.FormatUint(uint64(pid), 10), "status"))
+	for _, line := range strings.Split(string(statusData), "\n") {
+		if strings.HasPrefix(line, "Threads:") {
+			fmt.Sscanf(line, "Threads:\t%d", &metrics.Threads)
+		}
+	}
+	if info, err := os.Stat(statPath); err == nil {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			metrics.User = strconv.FormatUint(uint64(stat.Uid), 10)
+		}
+	}
+	s.mu.Lock()
+	if previous, ok := s.previous[pid]; ok {
+		elapsed := now.Sub(previous.at).Seconds()
+		if elapsed > 0 && ticks >= previous.ticks {
+			metrics.CPUPercent = float64(ticks-previous.ticks) / elapsed
+		}
+	}
+	s.previous[pid] = cpuSample{ticks: ticks, at: now}
+	s.mu.Unlock()
+	return metrics, true
+}
+
+func listLivePIDs() []uint32 {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	pids := make([]uint32, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.ParseUint(entry.Name(), 10, 32)
+		if err == nil && pid > 0 {
+			pids = append(pids, uint32(pid))
+		}
+	}
+	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+	return pids
+}
+
+func findLiveProcesses(query string, sampler *processMetricsSampler) []struct {
+	PID     uint32
+	Metrics processMetrics
+} {
+	ignored := map[string]bool{"what": true, "which": true, "show": true, "give": true, "need": true, "process": true, "processes": true, "details": true, "detail": true, "browser": true, "please": true, "about": true, "with": true, "from": true, "that": true, "this": true, "pid": true, "running": true}
+	words := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool { return r < 'a' || r > 'z' })
+	terms := make([]string, 0, len(words))
+	for _, word := range words {
+		if len(word) >= 3 && !ignored[word] {
+			terms = append(terms, word)
+		}
+	}
+	if len(terms) == 0 {
+		return nil
+	}
+	matches := make([]struct {
+		PID     uint32
+		Metrics processMetrics
+	}, 0, 8)
+	for _, pid := range listLivePIDs() {
+		metrics, alive := sampler.read(pid)
+		if !alive {
+			continue
+		}
+		name := strings.ToLower(metrics.Comm)
+		for _, term := range terms {
+			if strings.Contains(name, term) {
+				matches = append(matches, struct {
+					PID     uint32
+					Metrics processMetrics
+				}{pid, metrics})
+				break
+			}
+		}
+		if len(matches) >= 12 {
+			break
+		}
+	}
+	return matches
+}
+
+func topProcessEvidence(values map[string]int, limit int) []string {
+	type evidence struct {
+		name  string
+		count int
+	}
+	items := make([]evidence, 0, len(values))
+	for name, count := range values {
+		items = append(items, evidence{name, count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count != items[j].count {
+			return items[i].count > items[j].count
+		}
+		return items[i].name < items[j].name
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.name)
+	}
+	return out
+}
+
 // CLI flags
 var (
-	flagSensorObj      = flag.String("sensor-obj", "bpf/sensor.o", "Path to compiled sensor BPF object")
-	flagLSMObj         = flag.String("lsm-obj", "bpf/lsm.o", "Path to compiled LSM BPF object")
-	flagFallbackKill   = flag.Bool("fallback-signal-kill", false, "Use SIGKILL instead of BPF-LSM deny")
-	flagScorerAddr     = flag.String("scorer-addr", "http://127.0.0.1:8099", "Python scorer sidecar address")
-	flagListenAddr     = flag.String("listen", ":8080", "Dashboard HTTP listen address")
-	flagLogFile        = flag.String("log-file", "events.jsonl", "Event log file path")
-	flagDataDir        = flag.String("data-dir", "data", "Data directory for baseline files")
+	flagSensorObj        = flag.String("sensor-obj", "bpf/sensor.o", "Path to compiled sensor BPF object")
+	flagLSMObj           = flag.String("lsm-obj", "bpf/lsm.o", "Path to compiled LSM BPF object")
+	flagFallbackKill     = flag.Bool("fallback-signal-kill", false, "Use SIGKILL instead of BPF-LSM deny")
+	flagScorerAddr       = flag.String("scorer-addr", "http://127.0.0.1:8099", "Python scorer sidecar address")
+	flagListenAddr       = flag.String("listen", ":8080", "Dashboard HTTP listen address")
+	flagLogFile          = flag.String("log-file", "events.jsonl", "Event log file path")
+	flagDataDir          = flag.String("data-dir", "data", "Data directory for baseline files")
 	flagEnableCRIU       = flag.Bool("enable-criu", false, "Enable CRIU checkpoint+verify path")
 	flagMode             = flag.String("mode", "observe", "Operating mode: observe (default, never kills) or enforce (kills threats)")
 	flagMaxEventsPerSec  = flag.Int("max-events-per-sec", 50, "Max events processed per second (rate limit)")
@@ -469,9 +658,9 @@ func processEvents(
 				sseHub.broadcast(sseEvent{
 					Type: "event",
 					Data: map[string]interface{}{
-						"event":    evt,
-						"decision": decision,
-						"features": features,
+						"event":       evt,
+						"decision":    decision,
+						"features":    features,
 						"graph_stats": cg.Stats(),
 						"rate_info": map[string]interface{}{
 							"processed": processedCount,
@@ -530,6 +719,7 @@ func callScorer(client *http.Client, addr string, pid uint32, features graph.Fea
 
 func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *response.EventLog, database *db.Store, narrator *narration.Narrator, hub *sseHub, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
+	metricsSampler := newProcessMetricsSampler()
 
 	dashboardDir := "dashboard"
 	if _, err := os.Stat(dashboardDir); err == nil {
@@ -618,8 +808,20 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		snapshot := cg.Snapshot()
 		var trustScores []map[string]interface{}
+		included := make(map[uint32]bool)
 		for _, node := range snapshot.Nodes {
 			if node.Type == graph.NodeProcess {
+				metrics, alive := metricsSampler.read(node.PID)
+				// The monitor view is intentionally live-only. Historical and killed
+				// records are retained in the database but cannot slow down the UI.
+				if !alive {
+					continue
+				}
+				// PID values can be reused after a process exits. Do not attach an
+				// old security record to an unrelated new process with the same PID.
+				if !metrics.StartedAt.IsZero() && metrics.StartedAt.After(node.FirstSeen.Add(5*time.Second)) {
+					continue
+				}
 				status := response.ClassifyProcess(node.Comm, 1.0)
 				if respEngine.IsTrusted(node.Comm, node.PID) {
 					status = response.StatusKnown
@@ -629,20 +831,91 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 					status = response.StatusPaused
 				}
 				trustScores = append(trustScores, map[string]interface{}{
-					"pid":        node.PID,
-					"ppid":       node.PPID,
-					"comm":       node.Comm,
-					"trust":      node.Trust,
-					"status":     status,
-					"tier":       graph.TrustTier(node.Trust),
-					"color":      graph.TrustColor(node.Trust),
-					"label":      node.Label,
-					"first_seen": node.FirstSeen,
-					"paused":     respEngine.IsProcessPaused(node.PID),
+					"pid":                  node.PID,
+					"ppid":                 node.PPID,
+					"comm":                 node.Comm,
+					"trust":                node.Trust,
+					"status":               status,
+					"tier":                 graph.TrustTier(node.Trust),
+					"color":                graph.TrustColor(node.Trust),
+					"label":                node.Label,
+					"first_seen":           node.FirstSeen,
+					"started_at":           metrics.StartedAt,
+					"runtime_seconds":      metrics.RuntimeSeconds,
+					"cpu_percent":          metrics.CPUPercent,
+					"memory_rss_bytes":     metrics.MemoryRSSBytes,
+					"memory_virtual_bytes": metrics.MemoryVirtualBytes,
+					"threads":              metrics.Threads,
+					"process_state":        metrics.State,
+					"user":                 metrics.User,
+					"gpu_percent":          metrics.GPUPercent,
+					"paused":               respEngine.IsProcessPaused(node.PID),
 				})
+				included[node.PID] = true
 			}
 		}
+		// Add current Linux processes which have not generated a monitored
+		// syscall yet. They are inventory-only (unprofiled), not alerts.
+		for _, pid := range listLivePIDs() {
+			if included[pid] {
+				continue
+			}
+			metrics, alive := metricsSampler.read(pid)
+			if !alive {
+				continue
+			}
+			trustScores = append(trustScores, map[string]interface{}{
+				"pid": pid, "ppid": metrics.PPID, "comm": metrics.Comm,
+				"trust": 80.0, "status": "unprofiled", "tier": "trusted",
+				"label": fmt.Sprintf("%s [%d]", metrics.Comm, pid), "first_seen": metrics.StartedAt,
+				"started_at": metrics.StartedAt, "runtime_seconds": metrics.RuntimeSeconds,
+				"cpu_percent": metrics.CPUPercent, "memory_rss_bytes": metrics.MemoryRSSBytes,
+				"memory_virtual_bytes": metrics.MemoryVirtualBytes, "threads": metrics.Threads,
+				"process_state": metrics.State, "user": metrics.User, "gpu_percent": metrics.GPUPercent,
+				"paused": false,
+			})
+		}
+		sort.Slice(trustScores, func(i, j int) bool {
+			return trustScores[i]["trust"].(float64) < trustScores[j]["trust"].(float64)
+		})
+		// A compact live overview avoids sending thousands of retired kernel
+		// graph entries to the browser. Full provenance is fetched on click.
+		if len(trustScores) > 500 {
+			trustScores = trustScores[:500]
+		}
 		json.NewEncoder(w).Encode(trustScores)
+	})
+
+	mux.HandleFunc("/api/process/details", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		pid64, err := strconv.ParseUint(r.URL.Query().Get("pid"), 10, 32)
+		if err != nil || pid64 == 0 {
+			http.Error(w, "valid pid required", http.StatusBadRequest)
+			return
+		}
+		pid := uint32(pid64)
+		metrics, alive := metricsSampler.read(pid)
+		if !alive {
+			http.Error(w, "process is no longer running", http.StatusNotFound)
+			return
+		}
+		result := map[string]interface{}{
+			"pid": pid, "started_at": metrics.StartedAt, "runtime_seconds": metrics.RuntimeSeconds,
+			"cpu_percent": metrics.CPUPercent, "memory_rss_bytes": metrics.MemoryRSSBytes,
+			"memory_virtual_bytes": metrics.MemoryVirtualBytes, "threads": metrics.Threads,
+			"process_state": metrics.State, "user": metrics.User, "gpu_percent": metrics.GPUPercent,
+			"recent_sockets": []string{}, "recent_files": []string{}, "attack_patterns": []db.AttackPattern{},
+		}
+		if database != nil {
+			if proc, found := database.GetProcessSnapshot(pid); found {
+				result["recent_sockets"] = topProcessEvidence(proc.NetworkSockets, 12)
+				result["recent_files"] = topProcessEvidence(proc.AccessedFiles, 12)
+				result["attack_patterns"] = proc.AttackPatterns
+				result["parent_comm"] = proc.ParentComm
+				result["ended_at"] = proc.EndedAt
+			}
+		}
+		json.NewEncoder(w).Encode(result)
 	})
 
 	// Dynamic Trust Override API: allows user or chat to mark process as trusted
@@ -685,8 +958,14 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
-		if r.Method != "POST" { http.Error(w, "POST only", http.StatusMethodNotAllowed); return }
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
 
 		var req struct {
 			Comm   string `json:"comm"`
@@ -717,8 +996,14 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
-		if r.Method != "POST" { http.Error(w, "POST only", http.StatusMethodNotAllowed); return }
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
 
 		var req struct {
 			PID  uint32 `json:"pid"`
@@ -751,8 +1036,14 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
-		if r.Method != "POST" { http.Error(w, "POST only", http.StatusMethodNotAllowed); return }
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
 
 		var req struct {
 			PID uint32 `json:"pid"`
@@ -799,8 +1090,14 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
-		if r.Method != "POST" { http.Error(w, "POST only", http.StatusMethodNotAllowed); return }
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
 
 		var req struct {
 			PID  uint32 `json:"pid"`
@@ -934,8 +1231,12 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		if strings.HasPrefix(lowerQuery, "resume ") || strings.HasPrefix(lowerQuery, "unpause ") {
 			var targetPID uint32
 			fmt.Sscanf(lowerQuery, "resume pid %d", &targetPID)
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "resume %d", &targetPID) }
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "unpause %d", &targetPID) }
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "resume %d", &targetPID)
+			}
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "unpause %d", &targetPID)
+			}
 			if targetPID > 0 {
 				if err := respEngine.ResumeProcess(targetPID); err != nil {
 					json.NewEncoder(w).Encode(map[string]string{"response": fmt.Sprintf("⚠️ Could not resume PID %d: %s", targetPID, err.Error())})
@@ -951,8 +1252,12 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		if strings.HasPrefix(lowerQuery, "suspend ") || (strings.HasPrefix(lowerQuery, "pause ") && !strings.Contains(lowerQuery, "mode")) {
 			var targetPID uint32
 			fmt.Sscanf(lowerQuery, "pause pid %d", &targetPID)
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "pause %d", &targetPID) }
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "suspend %d", &targetPID) }
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "pause %d", &targetPID)
+			}
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "suspend %d", &targetPID)
+			}
 			if targetPID > 0 {
 				if err := respEngine.PauseProcess(targetPID, "user-cmd"); err != nil {
 					json.NewEncoder(w).Encode(map[string]string{"response": fmt.Sprintf("⚠️ Could not pause PID %d: %s", targetPID, err.Error())})
@@ -968,8 +1273,12 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		if strings.HasPrefix(lowerQuery, "kill ") || strings.HasPrefix(lowerQuery, "terminate ") {
 			var targetPID uint32
 			fmt.Sscanf(lowerQuery, "kill pid %d", &targetPID)
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "kill %d", &targetPID) }
-			if targetPID == 0 { fmt.Sscanf(lowerQuery, "terminate %d", &targetPID) }
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "kill %d", &targetPID)
+			}
+			if targetPID == 0 {
+				fmt.Sscanf(lowerQuery, "terminate %d", &targetPID)
+			}
 			if targetPID > 0 {
 				if err := respEngine.KillProcess(targetPID, "user-cmd"); err != nil {
 					json.NewEncoder(w).Encode(map[string]string{"response": fmt.Sprintf("⚠️ Could not kill PID %d: %s", targetPID, err.Error())})
@@ -984,9 +1293,15 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		if strings.Contains(lowerQuery, "block all") || strings.Contains(lowerQuery, "pause all") || strings.Contains(lowerQuery, "block all process") {
 			var threshold float64 = 40
 			fmt.Sscanf(lowerQuery, "block all process below %f", &threshold)
-			if threshold == 40 { fmt.Sscanf(lowerQuery, "block all below %f", &threshold) }
-			if threshold == 40 { fmt.Sscanf(lowerQuery, "pause all below %f", &threshold) }
-			if threshold == 40 { fmt.Sscanf(lowerQuery, "block all processes below %f", &threshold) }
+			if threshold == 40 {
+				fmt.Sscanf(lowerQuery, "block all below %f", &threshold)
+			}
+			if threshold == 40 {
+				fmt.Sscanf(lowerQuery, "pause all below %f", &threshold)
+			}
+			if threshold == 40 {
+				fmt.Sscanf(lowerQuery, "block all processes below %f", &threshold)
+			}
 
 			targets := respEngine.GetSuspiciousBelow(threshold)
 			if len(targets) == 0 {
@@ -1042,7 +1357,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			icons := map[string]string{"kill": "💀", "pause": "⏸", "resume": "▶", "trust": "✅"}
 			for _, e := range log {
 				icon := icons[e.Action]
-				if icon == "" { icon = "📋" }
+				if icon == "" {
+					icon = "📋"
+				}
 				lines = append(lines, fmt.Sprintf("%s [%s] %s %s(PID %d) by=%s result=%s",
 					icon, e.Timestamp.Format("15:04:05"), e.Action, e.Comm, e.PID, e.By, e.Result))
 			}
@@ -1060,9 +1377,13 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				var lines []string
 				for i, h := range req.History {
 					prefix := "👤 You"
-					if h.Role == "ai" { prefix = "🤖 AI" }
+					if h.Role == "ai" {
+						prefix = "🤖 AI"
+					}
 					text := h.Text
-					if len(text) > 120 { text = text[:120] + "..." }
+					if len(text) > 120 {
+						text = text[:120] + "..."
+					}
 					lines = append(lines, fmt.Sprintf("%d. %s: %s", i+1, prefix, text))
 				}
 				reply := fmt.Sprintf("💬 **Current session history** (%d messages):\n%s", len(req.History), strings.Join(lines, "\n"))
@@ -1074,7 +1395,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 					if len(lines2) > 0 {
 						reply += fmt.Sprintf("\n\n📂 **Past sessions on disk** (%d saved Q&As in data/session_analysis.jsonl)\n", len(lines2))
 						start := len(lines2) - 5
-						if start < 0 { start = 0 }
+						if start < 0 {
+							start = 0
+						}
 						for _, line := range lines2[start:] {
 							var e struct {
 								Timestamp string `json:"ts"`
@@ -1083,7 +1406,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 							}
 							if json.Unmarshal([]byte(line), &e) == nil {
 								ans := e.Answer
-								if len(ans) > 80 { ans = ans[:80] + "..." }
+								if len(ans) > 80 {
+									ans = ans[:80] + "..."
+								}
 								reply += fmt.Sprintf("• [%s] Q: %s\n  → %s\n", e.Timestamp[:16], e.Query, ans)
 							}
 						}
@@ -1102,7 +1427,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 			var histLines []string
 			start := len(lines) - 10
-			if start < 0 { start = 0 }
+			if start < 0 {
+				start = 0
+			}
 			for i, line := range lines[start:] {
 				var e struct {
 					Timestamp string `json:"ts"`
@@ -1111,7 +1438,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				}
 				if json.Unmarshal([]byte(line), &e) == nil {
 					ans := e.Answer
-					if len(ans) > 100 { ans = ans[:100] + "..." }
+					if len(ans) > 100 {
+						ans = ans[:100] + "..."
+					}
 					histLines = append(histLines, fmt.Sprintf("%d. [%s] Q: %s\n   → %s", i+1, e.Timestamp[:16], e.Query, ans))
 				}
 			}
@@ -1137,7 +1466,28 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			return
 		}
 
-		// ── 9. LLM FREE-FORM — with full real context ───────────────────────
+		// ── 9. LIVE PROCESS LOOKUP — deterministic, not an LLM guess ───────
+		if req.PID == 0 && (strings.Contains(lowerQuery, "pid") || strings.Contains(lowerQuery, "detail") || strings.Contains(lowerQuery, "process") || strings.Contains(lowerQuery, "browser")) {
+			matches := findLiveProcesses(query, metricsSampler)
+			if len(matches) > 0 {
+				var reply strings.Builder
+				reply.WriteString("Live process inventory match:\n")
+				for _, match := range matches {
+					m := match.Metrics
+					reply.WriteString(fmt.Sprintf("• %s — PID %d, PPID %d, state %s, CPU %.1f%%, RSS %.1f MiB, threads %d, runtime %s\n",
+						m.Comm, match.PID, m.PPID, m.State, m.CPUPercent, float64(m.MemoryRSSBytes)/(1024*1024), m.Threads, time.Duration(m.RuntimeSeconds)*time.Second))
+				}
+				reply.WriteString("Open the matching row in Process Monitor or Attack Patterns & Tree for its full recorded security, file, and network evidence.")
+				answer := reply.String()
+				if database != nil {
+					database.RecordConversation(query, answer, "live-process-lookup", string(respEngine.GetMode()), 0)
+				}
+				json.NewEncoder(w).Encode(map[string]string{"response": answer})
+				return
+			}
+		}
+
+		// ── 10. LLM FREE-FORM — with full real context ────────────────────
 		var pidContextStr string
 		if req.PID > 0 {
 			ctxMap := cg.GetProcessContext(req.PID)
@@ -1151,7 +1501,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		for pid, comm := range pausedMap {
 			pausedCtx += fmt.Sprintf("  ⏸ %s (PID %d)\n", comm, pid)
 		}
-		if pausedCtx == "" { pausedCtx = "  (none)" }
+		if pausedCtx == "" {
+			pausedCtx = "  (none)"
+		}
 
 		// Action log for context
 		recentActions := respEngine.GetActionLog(5)
@@ -1159,12 +1511,16 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		for _, e := range recentActions {
 			actionCtx += fmt.Sprintf("  [%s] %s %s(PID %d)\n", e.Timestamp.Format("15:04:05"), e.Action, e.Comm, e.PID)
 		}
-		if actionCtx == "" { actionCtx = "  (none)" }
+		if actionCtx == "" {
+			actionCtx = "  (none)"
+		}
 
 		recentDecs := respEngine.RecentDecisions(15)
 		var contextStr string
 		for _, d := range recentDecs {
-			if d.Status == response.StatusKnown { continue } // skip known processes to save tokens
+			if d.Status == response.StatusKnown {
+				continue
+			} // skip known processes to save tokens
 			contextStr += fmt.Sprintf("• PID=%d Comm=%s Trust=%.0f Status=%s Action=%s Tech=%s\n",
 				d.PID, d.Comm, d.TrustScore, d.Status, d.Action, d.TechniqueID)
 		}
@@ -1175,13 +1531,17 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			historySection = "CONVERSATION HISTORY (use this to answer follow-up questions; the USER may refer to what was said before):\n"
 			// Only include last 8 exchanges to save tokens
 			histStart := 0
-			if len(req.History) > 16 { histStart = len(req.History) - 16 }
+			if len(req.History) > 16 {
+				histStart = len(req.History) - 16
+			}
 			for _, h := range req.History[histStart:] {
 				if h.Role == "user" {
 					historySection += fmt.Sprintf("  USER: %s\n", h.Text)
 				} else {
 					text := h.Text
-					if len(text) > 200 { text = text[:200] + "..." } // trim long AI replies
+					if len(text) > 200 {
+						text = text[:200] + "..."
+					} // trim long AI replies
 					historySection += fmt.Sprintf("  AI: %s\n", text)
 				}
 			}

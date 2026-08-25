@@ -22,6 +22,7 @@
         graphFilter: 'all',
         currentTab: 'narration',
         currentView: 'security',
+        graphSignature: '',
         rateInfo: { processed: 0, dropped: 0 },
         pausedProcesses: [],
         chatHistory: []       // [{role:'user'|'ai', text:'...'}]
@@ -55,6 +56,10 @@
     let trustContainerHovered = false;
     let renderPending = false;
     let renderDebounceTimer = null;
+    let pendingDecisionEntries = [];
+    let pendingEventEntries = [];
+    let decisionRenderTimer = null;
+    let eventRenderTimer = null;
 
     // ---- Init ----
     document.addEventListener('DOMContentLoaded', () => {
@@ -77,7 +82,10 @@
         setInterval(fetchStats, 2500);
         setInterval(fetchPausedProcesses, 2000);
         setInterval(fetchActionLog, 3000);
-        setInterval(fetchAttackPatternsAndTree, 4000);
+        setInterval(fetchAttackPatternsAndTree, 10000);
+        setInterval(() => {
+            if (state.currentView === 'security') fetchProductionGraphData();
+        }, 6000);
 
         // Hover lock for process list
         if ($trustContainer) {
@@ -107,10 +115,12 @@
 
                 if (view === 'processes') renderHtop();
                 if (view === 'patterns') {
+                    fetchAttackPatternsAndTree();
                     renderAttackPatterns();
                     renderProcessTree();
                 }
                 if (view === 'security') {
+                    fetchProductionGraphData();
                     updateProductionGraph();
                 }
             });
@@ -202,6 +212,90 @@
         if ($sort) $sort.addEventListener('change', e => { htopSortBy = e.target.value; renderHtop(); });
     }
 
+    function findProcessTreeNode(pid, nodes = state.processTree || []) {
+        for (const node of nodes) {
+            if (Number(node.pid) === Number(pid)) return node;
+            const found = findProcessTreeNode(pid, node.children || []);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function getProcessPatterns(entry) {
+        if (!entry || !entry.pid) return [];
+        const fromTree = findProcessTreeNode(entry.pid)?.attack_patterns || [];
+        const fromEntry = entry.attackPatterns || entry.attack_patterns || [];
+        const fromFeed = state.attackPatterns.filter(pattern => Number(pattern.pid) === Number(entry.pid));
+        const patterns = [...fromTree, ...fromEntry, ...fromFeed];
+        const seen = new Set();
+        return patterns.filter(pattern => {
+            const key = pattern.id || `${pattern.pid}:${pattern.technique_id}:${pattern.pattern_type}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function renderInspectorPatterns(entry) {
+        const container = document.getElementById('insp-patterns-container');
+        if (!container) return;
+        const patterns = getProcessPatterns(entry);
+        if (!patterns.length) {
+            container.innerHTML = '<div class="insp-patterns-empty">No ATT&amp;CK patterns have been identified for this process.</div>';
+            return;
+        }
+
+        container.innerHTML = patterns.map(pattern => {
+            const evidence = (pattern.evidence || []).map(item => `<span>${escapeHtml(item)}</span>`).join('');
+            return `<article class="insp-pattern-card severity-${String(pattern.severity || 'medium').toLowerCase()}">
+                <div class="insp-pattern-card-header">
+                    <strong>${escapeHtml(pattern.technique_id || 'ATT&CK')}</strong>
+                    <span>${escapeHtml(pattern.severity || 'DETECTED')}</span>
+                </div>
+                <div class="insp-pattern-name">${escapeHtml(pattern.technique || pattern.pattern_type || 'Suspicious activity')}</div>
+                <p>${escapeHtml(pattern.description || 'Behavioral pattern recorded by the sensor.')}</p>
+                ${evidence ? `<div class="insp-pattern-evidence">${evidence}</div>` : ''}
+            </article>`;
+        }).join('');
+    }
+
+    function formatBytes(value) {
+        const bytes = Number(value || 0);
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        return `${(bytes / Math.pow(1024, index)).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
+    }
+
+    function formatDuration(seconds) {
+        seconds = Math.max(0, Math.floor(Number(seconds || 0)));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remaining = seconds % 60;
+        return hours ? `${hours}h ${minutes}m ${remaining}s` : `${minutes}m ${remaining}s`;
+    }
+
+    function formatStarted(value) {
+        if (!value) return 'Unknown';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+    }
+
+    function renderInspectorAccess(entry) {
+        const container = document.getElementById('insp-access-container');
+        if (!container) return;
+        const sockets = entry.recent_sockets || [];
+        const files = entry.recent_files || [];
+        if (!sockets.length && !files.length) {
+            container.innerHTML = '<div class="insp-patterns-empty">No file or network evidence has been recorded for this live process.</div>';
+            return;
+        }
+        container.innerHTML = [
+            ...sockets.map(socket => `<div class="insp-access-evidence"><strong>Network</strong><span>${escapeHtml(socket)}</span></div>`),
+            ...files.map(file => `<div class="insp-access-evidence"><strong>File</strong><span>${escapeHtml(file)}</span></div>`)
+        ].join('');
+    }
+
     function initTreeControls() {
         const $ts = document.getElementById('tree-search');
         if ($ts) $ts.addEventListener('input', e => { treeSearchTerm = e.target.value.toLowerCase().trim(); renderProcessTree(); });
@@ -262,12 +356,19 @@
         setText('#insp-pids', `PID ${entry.pid}${entry.ppid ? ` (Parent PID: ${entry.ppid})` : ''}`);
         setText('#insp-status', `${statusEmoji} ${status.toUpperCase()}`);
         setText('#insp-trust', `${Math.round(entry.trust)}% (${tier})`);
-        setText('#insp-first-seen', entry.firstSeen ? new Date(entry.firstSeen).toLocaleTimeString() : 'Active');
+        setText('#insp-first-seen', formatStarted(entry.started_at || entry.first_seen || entry.firstSeen));
+        setText('#insp-runtime', `${formatDuration(entry.runtime_seconds)} · ${entry.process_state || status}`);
+        setText('#insp-ended', `${entry.ended_at ? formatStarted(entry.ended_at) : 'Running'} · UID ${entry.user || '-'}`);
+        setText('#insp-resources', `${Number(entry.cpu_percent || 0).toFixed(1)}% CPU · ${formatBytes(entry.memory_rss_bytes)} RSS`);
+        const gpu = entry.gpu_percent === null || entry.gpu_percent === undefined ? 'N/A' : `${Number(entry.gpu_percent).toFixed(1)}%`;
+        setText('#insp-threads-gpu', `${entry.threads || 0} threads · GPU ${gpu}`);
 
         // Threat analysis fields
         const tech = entry.technique || entry.techniqueID;
         const techDesc = entry.techniqueDesc || '';
         setText('#insp-technique', tech ? `${tech}${techDesc ? ' — ' + techDesc : ''}` : 'None detected');
+        renderInspectorPatterns(entry);
+        renderInspectorAccess(entry);
         const reasonMap = {
             'observe_critical': 'High anomaly score — staging or anomalous payload activity',
             'paused_sigstop': 'Suspended by monitor — awaiting operator authorization',
@@ -359,6 +460,20 @@
         }
 
         $inspectorModal.classList.remove('hidden');
+
+        // Keep the recurring overview payload small. Full file/network and
+        // ATT&CK evidence is loaded only for the process the operator opens.
+        if (!entry.detailsLoaded && entry.pid) {
+            fetch(`/api/process/details?pid=${encodeURIComponent(entry.pid)}`)
+                .then(response => response.ok ? response.json() : null)
+                .then(details => {
+                    if (!details) return;
+                    Object.assign(entry, details, { detailsLoaded: true });
+                    if (state.trustScores[entry.pid]) Object.assign(state.trustScores[entry.pid], entry);
+                    if (!$inspectorModal.classList.contains('hidden')) openProcessInspector(entry);
+                })
+                .catch(() => { /* Process may have exited while being inspected. */ });
+        }
     }
 
     // ---- AI Security Chat ----
@@ -490,6 +605,15 @@
             if (resp.ok) {
                 const scores = await resp.json();
                 if (scores) {
+                    const livePIDs = new Set(scores.map(s => String(s.pid)));
+                    // The server publishes live /proc PIDs only. Remove records
+                    // that disappeared so Process Classification never becomes a
+                    // historical process graveyard.
+                    Object.keys(state.trustScores).forEach(pid => {
+                        if (!livePIDs.has(String(pid)) && !state.trustScores[pid].killed) {
+                            delete state.trustScores[pid];
+                        }
+                    });
                     scores.forEach(s => {
                         if (!state.trustScores[s.pid] || !state.trustScores[s.pid].killed) {
                             state.trustScores[s.pid] = { ...state.trustScores[s.pid], ...s };
@@ -551,20 +675,25 @@
 
     async function fetchAttackPatternsAndTree() {
         try {
-            const [patResp, treeResp] = await Promise.all([
-                fetch('/api/db/attack_patterns'),
-                fetch('/api/db/tree')
-            ]);
+            const patResp = await fetch('/api/db/attack_patterns');
             if (patResp.ok) {
                 state.attackPatterns = await patResp.json() || [];
                 setText('#pattern-count', state.attackPatterns.length);
                 setText('#attack-patterns-live-badge', `${state.attackPatterns.length} DETECTED`);
                 if (state.currentView === 'patterns') renderAttackPatterns();
             }
-            if (treeResp.ok) {
-                state.processTree = await treeResp.json() || [];
-                if (state.currentView === 'patterns') renderProcessTree();
+            // The tree can be large. Do not download and parse it while the
+            // operator is working in the Security Dashboard or Process Monitor.
+            if (state.currentView === 'patterns') {
+                const treeResp = await fetch('/api/db/tree');
+                if (treeResp.ok) {
+                    state.processTree = await treeResp.json() || [];
+                    renderProcessTree();
+                }
             }
+            // The Process Monitor shares this evidence. Refresh only its active
+            // view so live polling never interrupts an operator elsewhere.
+            if (state.currentView === 'processes') renderHtop();
         } catch (e) { /* silent */ }
     }
 
@@ -574,11 +703,20 @@
             if (resp.ok) {
                 const data = await resp.json();
                 if (data) {
+                    const signature = graphDataSignature(data);
+                    if (signature === state.graphSignature) return;
+                    state.graphSignature = signature;
                     state.productionGraph = data;
                     updateProductionGraph();
                 }
             }
         } catch (e) { /* silent */ }
+    }
+
+    function graphDataSignature(data) {
+        const nodes = (data.nodes || []).map(n => `${n.id}:${n.type}:${Math.round(n.trust || 0)}`).join('|');
+        const edges = (data.edges || []).map(e => `${e.source}>${e.target}:${e.weight || 0}:${e.severity || ''}`).join('|');
+        return `${data.active_threats || 0}/${nodes}/${edges}`;
     }
 
     // ---- Event handling from SSE ----
@@ -602,7 +740,7 @@
         if (evt) {
             state.events.unshift(evt);
             if (state.events.length > 100) state.events.pop();
-            renderEventEntry(evt);
+            queueEventEntry(evt);
         }
 
         if (decision) {
@@ -639,7 +777,7 @@
         if (d.tier === 'medium' || d.tier === 'high') state.alertCount++;
         if (d.action === 'kill' || d.action === 'verified_kill') state.killCount++;
 
-        renderDecisionEntry(d);
+        queueDecisionEntry(d);
         renderAlertStats();
     }
 
@@ -807,16 +945,19 @@
         });
 
         if (entries.length === 0) {
-            $tbody.innerHTML = `<tr><td colspan="7" class="htop-empty">No processes tracked yet. Events are streaming live.</td></tr>`;
+            $tbody.innerHTML = `<tr><td colspan="13" class="htop-empty">No live monitored processes are available.</td></tr>`;
             return;
         }
 
+        const tableWrapper = $tbody.closest('.htop-table-wrapper');
+        const scrollTop = tableWrapper ? tableWrapper.scrollTop : 0;
         $tbody.innerHTML = '';
         entries.forEach(entry => {
             const tier = getTrustTier(entry.trust);
             const status = entry.paused ? 'paused' : (entry.status || 'unknown');
             const isPaused = status === 'paused';
             const isKnown = status === 'known';
+            const patterns = getProcessPatterns(entry);
             const sColors = { known: '#10b981', unknown: '#f59e0b', suspicious: '#ef4444', paused: '#6366f1' };
 
             const tr = document.createElement('tr');
@@ -825,11 +966,19 @@
                 <td class="htop-td htop-td-pid">${entry.pid}</td>
                 <td class="htop-td htop-td-ppid">${entry.ppid || '-'}</td>
                 <td class="htop-td htop-td-comm" title="${escapeHtml(entry.comm)}">${escapeHtml(entry.comm || '?')}</td>
+                <td class="htop-td htop-metric">${escapeHtml(formatStarted(entry.started_at || entry.first_seen).replace(/,.*$/, ''))}</td>
+                <td class="htop-td htop-metric">${formatDuration(entry.runtime_seconds)}</td>
+                <td class="htop-td htop-metric">${Number(entry.cpu_percent || 0).toFixed(1)}%</td>
+                <td class="htop-td htop-metric">${formatBytes(entry.memory_rss_bytes)}</td>
+                <td class="htop-td htop-metric">${entry.threads || 0}</td>
                 <td class="htop-td htop-td-trust ${tier}">${Math.round(entry.trust)}</td>
                 <td class="htop-bar-cell">
                     <div class="htop-bar"><div class="htop-bar-fill ${tier}" style="width:${Math.max(3,entry.trust)}%"></div></div>
                 </td>
                 <td class="htop-td" style="color:${sColors[status]||'#94a3b8'};font-weight:700;font-size:10px">${status.toUpperCase()}</td>
+                <td class="htop-td htop-patterns-cell" title="Click this process to inspect every known ATT&CK pattern">
+                    ${patterns.length ? `<span class="htop-pattern-count">${patterns.length} detected</span>` : '<span class="htop-no-patterns">None</span>'}
+                </td>
                 <td class="htop-actions-td">
                     ${!isKnown ? `<button class="row-btn known-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Trust">✅</button>` : ''}
                     ${!isPaused ? `<button class="row-btn pause-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Suspend">⏸</button>` : ''}
@@ -874,6 +1023,7 @@
 
             $tbody.appendChild(tr);
         });
+        if (tableWrapper) tableWrapper.scrollTop = scrollTop;
     }
 
     // ---- Attack Patterns & Hierarchical Tree (View 3) ----
@@ -908,6 +1058,17 @@
                 </div>
             `;
 
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.pattern-actions')) return;
+                openProcessInspector({
+                    ...(state.trustScores[pat.pid] || {}),
+                    pid: pat.pid, ppid: pat.ppid, comm: pat.comm,
+                    trust: state.trustScores[pat.pid]?.trust || 0,
+                    status: state.trustScores[pat.pid]?.status || 'suspicious',
+                    attack_patterns: [pat], action: pat.pattern_type
+                });
+            });
+
             card.querySelector('.kill-btn')?.addEventListener('click', async () => {
                 if (!confirm(`SIGKILL PID ${pat.pid}?`)) return;
                 await killProcess(pat.pid, pat.comm);
@@ -935,7 +1096,26 @@
 
     function renderProcessTree() {
         if (!$processTreeContainer) return;
-        let roots = state.processTree || [];
+        let roots = [...(state.processTree || [])];
+        const treePIDs = new Set();
+        const collectPIDs = nodes => nodes.forEach(node => {
+            treePIDs.add(Number(node.pid));
+            collectPIDs(node.children || []);
+        });
+        collectPIDs(roots);
+
+        // The attack/provenance store only contains processes with observed
+        // kernel events. Add the remaining live /proc inventory so this view
+        // truly represents all current processes; its inspector loads the full
+        // available live details on click.
+        Object.values(state.trustScores).forEach(entry => {
+            if (treePIDs.has(Number(entry.pid))) return;
+            roots.push({
+                pid: entry.pid, ppid: entry.ppid || 0, comm: entry.comm || '?',
+                trust_score: entry.trust, status: entry.status || 'unprofiled',
+                recent_files: [], recent_sockets: [], attack_patterns: [], children: []
+            });
+        });
 
         if (treeSearchTerm) {
             roots = roots.filter(r =>
@@ -951,6 +1131,7 @@
         }
 
         $processTreeContainer.innerHTML = '';
+        roots.sort((a, b) => (a.trust_score || 80) - (b.trust_score || 80) || String(a.comm).localeCompare(String(b.comm)));
         roots.forEach(root => {
             $processTreeContainer.appendChild(buildTreeNodeDOM(root, true));
         });
@@ -965,8 +1146,11 @@
         const filesCount = node.files_count || 0;
         const socksCount = node.sockets_count || 0;
 
-        let fileTags = (node.recent_files || []).slice(0, 3).map(f => `<span class="tree-access-tag">📄 ${truncate(f, 32)}</span>`).join('');
-        let sockTags = (node.recent_sockets || []).slice(0, 2).map(s => `<span class="tree-access-tag tree-sock-tag">🌐 ${s}</span>`).join('');
+        let fileTags = (node.recent_files || []).slice(0, 3).map(f => `<span class="tree-access-tag">📄 ${escapeHtml(truncate(f, 32))}</span>`).join('');
+        let sockTags = (node.recent_sockets || []).slice(0, 2).map(s => `<span class="tree-access-tag tree-sock-tag">🌐 ${escapeHtml(s)}</span>`).join('');
+        const patternTags = (node.attack_patterns || []).map(pattern =>
+            `<span class="tree-pattern-tag" title="${escapeHtml(pattern.description || '')}">${escapeHtml(pattern.technique_id || 'ATT&CK')} · ${escapeHtml(pattern.pattern_type || 'DETECTED')}</span>`
+        ).join('');
 
         card.innerHTML = `
             <div class="tree-node-row">
@@ -984,6 +1168,7 @@
                 </div>
             </div>
             ${(filesCount > 0 || socksCount > 0) ? `<div class="tree-access-section">${fileTags} ${sockTags}</div>` : ''}
+            ${patternTags ? `<div class="tree-pattern-section">${patternTags}</div>` : ''}
         `;
 
         card.querySelector('.ask-btn')?.addEventListener('click', (e) => {
@@ -991,6 +1176,18 @@
             openProcessInspector({
                 pid: node.pid, ppid: node.ppid, comm: node.comm,
                 trust: node.trust_score, status: node.status,
+                action: node.attack_patterns && node.attack_patterns[0] ? node.attack_patterns[0].pattern_type : ''
+            });
+        });
+
+        card.querySelector('.tree-node-row')?.addEventListener('click', (e) => {
+            if (e.target.closest('.process-actions') || e.target.closest('.tree-toggle-icon')) return;
+            openProcessInspector({
+                ...(state.trustScores[node.pid] || {}),
+                pid: node.pid, ppid: node.ppid, comm: node.comm,
+                trust: node.trust_score, status: node.status,
+                recent_files: node.recent_files, recent_sockets: node.recent_sockets,
+                attack_patterns: node.attack_patterns,
                 action: node.attack_patterns && node.attack_patterns[0] ? node.attack_patterns[0].pattern_type : ''
             });
         });
@@ -1036,16 +1233,19 @@
     let prodSim, prodSvg, prodG, prodLinkSel, prodNodeSel, prodLabelSel, prodZoom;
     let currentGraphNodes = [];
     let currentGraphLinks = [];
+    let graphWidth = 0;
+    let graphHeight = 0;
 
     function initProductionGraph() {
         const svg = d3.select('#causal-graph');
         const container = document.getElementById('graph-container');
         if (!container || svg.empty()) return;
+        prodSvg = svg;
 
-        const width = container.clientWidth || 900;
-        const height = container.clientHeight || 520;
+        const { width, height } = getGraphDimensions(container);
 
-        svg.attr('viewBox', `0 0 ${width} ${height}`);
+        svg.attr('viewBox', `0 0 ${width} ${height}`)
+            .attr('preserveAspectRatio', 'xMidYMid meet');
 
         svg.append('defs').append('marker')
             .attr('id', 'prod-arrowhead')
@@ -1076,11 +1276,45 @@
         prodLabelSel = prodG.append('g').attr('class', 'labels').selectAll('text');
 
         prodSim = d3.forceSimulation()
-            .force('link', d3.forceLink().id(d => d.id).distance(80))
-            .force('charge', d3.forceManyBody().strength(-140))
+            .force('link', d3.forceLink().id(d => d.id).distance(105))
+            .force('charge', d3.forceManyBody().strength(-180))
             .force('center', d3.forceCenter(width / 2, height / 2))
-            .force('collision', d3.forceCollide(24))
+            .force('collision', d3.forceCollide(30))
             .on('tick', prodTicked);
+
+        resizeProductionGraph(true);
+        if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(() => resizeProductionGraph()).observe(container);
+        } else {
+            window.addEventListener('resize', resizeProductionGraph);
+        }
+    }
+
+    function getGraphDimensions(container) {
+        return {
+            width: Math.max(container?.clientWidth || 0, 320),
+            height: Math.max(container?.clientHeight || 0, 280)
+        };
+    }
+
+    function resizeProductionGraph(force = false) {
+        if (!prodSvg || !prodSim || !$graphContainer) return;
+        const { width, height } = getGraphDimensions($graphContainer);
+        if (!force && width === graphWidth && height === graphHeight) return;
+        graphWidth = width;
+        graphHeight = height;
+        prodSvg.attr('viewBox', `0 0 ${width} ${height}`);
+        prodSim.force('center', d3.forceCenter(width / 2, height / 2));
+        prodSim.force('depth', d3.forceY(d => graphDepth(d) * Math.max(80, height / 6) + 55).strength(0.16));
+        prodSim.alpha(0.15).restart();
+    }
+
+    function graphDepth(node, seen = new Set()) {
+        if (!node || seen.has(node.id)) return 0;
+        seen.add(node.id);
+        if (node.type === 'socket') return 4;
+        const parent = currentGraphNodes.find(candidate => Number(candidate.pid) === Number(node.ppid));
+        return parent ? Math.min(graphDepth(parent, seen) + 1, 4) : 0;
     }
 
     function updateProductionGraph() {
@@ -1131,6 +1365,8 @@
             label: e.label
         }));
 
+        resizeProductionGraph();
+
         // Render Links
         prodLinkSel = prodG.select('.links').selectAll('line').data(currentGraphLinks);
         prodLinkSel.exit().remove();
@@ -1167,7 +1403,7 @@
         prodLabelSel = prodG.select('.labels').selectAll('text').data(currentGraphNodes, d => d.id);
         prodLabelSel.exit().remove();
         prodLabelSel = prodLabelSel.enter().append('text')
-            .text(d => truncate(d.label, 18))
+            .text(d => d.label)
             .attr('font-family', "'JetBrains Mono', monospace")
             .attr('font-size', '9px')
             .attr('fill', 'rgba(226, 232, 240, 0.85)')
@@ -1220,47 +1456,57 @@
     }
 
     // ---- Decision & Action Logs ----
-    function renderDecisionEntry(d) {
+    function queueDecisionEntry(decision) {
+        pendingDecisionEntries.push(decision);
+        if (decisionRenderTimer) return;
+        decisionRenderTimer = setTimeout(() => {
+            const batch = pendingDecisionEntries.splice(-12);
+            decisionRenderTimer = null;
+            renderDecisionEntries(batch);
+        }, 250);
+    }
+
+    function queueEventEntry(event) {
+        pendingEventEntries.push(event);
+        if (eventRenderTimer) return;
+        eventRenderTimer = setTimeout(() => {
+            const batch = pendingEventEntries.splice(-16);
+            eventRenderTimer = null;
+            renderEventEntries(batch);
+        }, 250);
+    }
+
+    function renderDecisionEntries(entries) {
         if (!$decisionsContainer) return;
         const empty = $decisionsContainer.querySelector('.empty-state');
         if (empty) empty.remove();
-
-        const tier = d.tier || 'low';
-        const el = document.createElement('div');
-        el.className = `decision-entry ${tier}`;
-        const time = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : '--:--:--';
-        const icons = { 'trusted_allow': '🟢', 'observe_log': '📋', 'observe_alert': '⚠️', 'observe_critical': '🚨', 'paused_sigstop': '⏸', 'kill': '💀' };
-
-        el.innerHTML = `
-            <div class="decision-header">
-                <span class="decision-tier ${tier}">${icons[d.action]||'📋'} ${tier} [${d.status || 'unknown'}]</span>
-                <span class="decision-time">${time}</span>
-            </div>
-            <div class="decision-body">
-                <strong>${escapeHtml(d.comm || '?')}</strong> (PID ${d.pid}) → ${d.action || 'unknown'}
-                ${d.technique_id ? `<br><span class="decision-technique">${d.technique_id}: ${d.technique || ''}</span>` : ''}
-                ${d.trust_score !== undefined ? `<br>Trust: ${Math.round(d.trust_score)} | p=${(d.conformal_p_value || 0).toFixed(4)}` : ''}
-            </div>
-        `;
-        $decisionsContainer.insertBefore(el, $decisionsContainer.firstChild);
+        const fragment = document.createDocumentFragment();
+        [...entries].reverse().forEach(d => {
+            const tier = d.tier || 'low';
+            const el = document.createElement('div');
+            el.className = `decision-entry ${tier}`;
+            const time = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : '--:--:--';
+            const icons = { 'trusted_allow': '🟢', 'observe_log': '📋', 'observe_alert': '⚠️', 'observe_critical': '🚨', 'paused_sigstop': '⏸', 'kill': '💀' };
+            el.innerHTML = `<div class="decision-header"><span class="decision-tier ${tier}">${icons[d.action]||'📋'} ${tier} [${d.status || 'unknown'}]</span><span class="decision-time">${time}</span></div><div class="decision-body"><strong>${escapeHtml(d.comm || '?')}</strong> (PID ${d.pid}) → ${d.action || 'unknown'}${d.technique_id ? `<br><span class="decision-technique">${d.technique_id}: ${d.technique || ''}</span>` : ''}${d.trust_score !== undefined ? `<br>Trust: ${Math.round(d.trust_score)} | p=${(d.conformal_p_value || 0).toFixed(4)}` : ''}</div>`;
+            fragment.appendChild(el);
+        });
+        $decisionsContainer.insertBefore(fragment, $decisionsContainer.firstChild);
         while ($decisionsContainer.children.length > 40) $decisionsContainer.removeChild($decisionsContainer.lastChild);
     }
 
-    function renderEventEntry(evt) {
+    function renderEventEntries(events) {
         if (!$eventsContainer) return;
         const empty = $eventsContainer.querySelector('.empty-state');
         if (empty) empty.remove();
-
-        const el = document.createElement('div');
-        el.className = 'event-entry';
-        el.innerHTML = `
-            <span class="event-type ${evt.type_str || ''}">${evt.type_str || '?'}</span>
-            <span class="event-pid">[${evt.pid}]</span>
-            <span class="event-payload">${escapeHtml(evt.comm || '')} ${evt.payload ? '→ ' + truncate(evt.payload, 36) : ''}</span>
-            ${evt.dst_ip ? `<span class="event-payload"> → ${evt.dst_ip}:${evt.dst_port}</span>` : ''}
-        `;
-        $eventsContainer.insertBefore(el, $eventsContainer.firstChild);
-        while ($eventsContainer.children.length > 50) $eventsContainer.removeChild($eventsContainer.lastChild);
+        const fragment = document.createDocumentFragment();
+        [...events].reverse().forEach(evt => {
+            const el = document.createElement('div');
+            el.className = 'event-entry';
+            el.innerHTML = `<span class="event-type ${evt.type_str || ''}">${evt.type_str || '?'}</span><span class="event-pid">[${evt.pid}]</span><span class="event-payload">${escapeHtml(evt.comm || '')} ${evt.payload ? '→ ' + truncate(evt.payload, 36) : ''}</span>${evt.dst_ip ? `<span class="event-payload"> → ${evt.dst_ip}:${evt.dst_port}</span>` : ''}`;
+            fragment.appendChild(el);
+        });
+        $eventsContainer.insertBefore(fragment, $eventsContainer.firstChild);
+        while ($eventsContainer.children.length > 40) $eventsContainer.removeChild($eventsContainer.lastChild);
     }
 
     function renderNarration(data) {
