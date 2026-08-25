@@ -1,254 +1,216 @@
-# Kernel Security Monitor (eBPF) — Complete Knowledge Base
-# Last Updated: 2026-08-24 | Build: PASSING ✅ | For: Token-boundary continuity
+# Kernel Security Monitor (eBPF) — Complete Knowledge Base & Project Chronicle
+# Last Updated: 2026-08-25 | Build: PASSING ✅ | Architecture: Persistent DB + SIEM Graph + ATT&CK Tree
 
 ---
 
-## PROJECT OVERVIEW
+## 1. PROJECT OVERVIEW
 
-**Kernel Security Monitor** is a Linux kernel security monitor that uses eBPF to watch all process
-executions, file opens, and network connections in real time. It has:
-- A Go backend (`cmd/sensor/main.go`) that loads eBPF programs and runs an HTTP server
-- A Python ML sidecar (`sidecar/scorer.py`) that scores process anomaly via Isolation Forest
-- A dashboard (`dashboard/`) that shows process trust scores, events, and AI chat
-- LLM integration via NVIDIA NIM / OpenAI API (`narrator.go`)
+**Kernel Security Monitor** is a production-grade Linux kernel security monitor leveraging eBPF tracepoints (`execve`, `openat`, `connect`) and BPF-LSM (`security_bprm_check`) to monitor, analyze, and respond to threats in real time.
 
-**Repo path**: `/home/unknown/vscodemanagement/projects/kernel-security-monitor`
-**Build**: `make build` → produces `./kernel-security-monitor` (and `./ksm` symlink)
-**Run**:
+- **Go Backend** (`cmd/sensor/main.go`): eBPF loaders, Causal Graph, Response Engine, Unified Database (`internal/db/store.go`), REST API, SSE event hub.
+- **Python ML Sidecar** (`sidecar/scorer.py`): FastAPI on port 8099, Isolation Forest anomaly scoring with conformal calibration.
+- **AI Copilot** (`internal/narration/narrator.go`): NVIDIA NIM / Cloud LLM (`meta/llama-3.1-8b-instruct`) with grounded local database telemetry search.
+- **Modern SIEM Dashboard** (`dashboard/`): 3-view top navigation (Security Dashboard with bottom Causal Graph, htop-style Process Monitor, and Attack Patterns & Process Provenance Tree).
+
+**Repo Path**: `/home/unknown/vscodemanagement/projects/kernel-security-monitor`  
+**Build Command**: `make build` → produces `./kernel-security-monitor`  
+**Run Command**:
 ```bash
-Terminal 1: cd /home/unknown/vscodemanagement/projects/kernel-security-monitor && source venv/bin/activate && python3 sidecar/scorer.py
-Terminal 2: export LLM_API_KEY="your-nvidia-api-key" && sudo -E ./kernel-security-monitor --mode observe --llm-endpoint "https://integrate.api.nvidia.com/v1" --llm-model "meta/llama-3.1-8b-instruct"
-Browser: http://localhost:8080
-Demo: bash ./scripts/demo_attack.sh
+# Terminal 1: ML Scorer
+cd /home/unknown/vscodemanagement/projects/kernel-security-monitor
+source venv/bin/activate
+python3 sidecar/scorer.py
+
+# Terminal 2: Sensor & Monitor
+export LLM_API_KEY="your-nvidia-api-key"
+sudo -E ./kernel-security-monitor --mode observe \
+  --llm-endpoint "https://integrate.api.nvidia.com/v1" \
+  --llm-model "meta/llama-3.1-8b-instruct"
+
+# Browser:
+http://localhost:8080
 ```
 
 ---
 
-## USER'S ENVIRONMENT
+## 2. CHRONOLOGICAL USER REQUESTS & SOLUTIONS (Checkpoint 7 to Present)
 
-- **OS**: Arch Linux `7.1.8-arch1-3` x86_64
-- **LLM**: NVIDIA NIM, endpoint `https://integrate.api.nvidia.com/v1`, model `meta/llama-3.1-8b-instruct`
-- **WM**: DWM (dwmblocks, st terminal)
-- **Desktop**: Minimal — no GNOME/KDE, just dwm + pipewire
-- **Python venv**: `venv/` inside the project root (use `source venv/bin/activate`)
-- **Key issue history**: System crashed when unconstrained background loops scored all processes. Resolved by comprehensive daemon whitelist.
+### Request 1: Process Table UI/UX — Rapid Jumping & Clickability
+- **User Issue**:
+  > *"after killed the process not ubdating in this calssicfications showing like process is running... process pid are over lapping... when i try to click the any process suddenly moving around i cannot click it it ubdating so fast"*
+- **Root Cause**: Unthrottled SSE updates re-rendered the DOM on every single kernel event; killed processes had no visual tombstone state; small row heights caused misclicks.
+- **Solution Implemented**:
+  1. **Hover Lock**: Freezes DOM re-renders while mouse cursor is over the process container.
+  2. **800ms Debounced Rendering**: Batches SSE events into smooth 800ms render ticks.
+  3. **Visual Tombstone & Fade-Out**: Killed processes immediately switch to `status: killed` (`☠️`) with an 8-second CSS fade-out before removal from memory.
+  4. **Stable 54px Min-Height Grid**: Fixed column dimensions with text truncation to prevent row wrapping or overlapping.
 
 ---
 
-## ARCHITECTURE
+### Request 2: Process Inspector Modal & SOAR Actions
+- **User Issue**:
+  > *"my idea when i click that process clafficatons make it open pop it front so can i use all process create navigations bar with item for pid log and all details about process eveything all details of why this process is blocked and all details"*
+- **Solution Implemented**:
+  1. **Two-Column Inspector Modal**:
+     - *Left*: Process Name, PID/PPID, Security Status badge, Trust score fill bar, First seen timestamp.
+     - *Right (Threat Analysis)*: MITRE ATT&CK technique ID, Human-readable reason why flagged (`observe_critical`, `paused_sigstop`, `staging_script`, `c2_beacon`), Action taken, Conformal p-value.
+  2. **SOAR Actions Injected**: `✅ Mark Known`, `⏸ Suspend (SIGSTOP)`, `▶ Resume (SIGCONT)`, `💀 Kill (SIGKILL)`, `🔍 Ask AI Copilot`.
+
+---
+
+### Request 3: htop-Style Process Monitor View
+- **User Issue**:
+  > *"create other navigations items like htop based that i can see all process normel htop is run on terminal but in this make wth clickable about current running process giving details like layer jsut like htop but with u element"*
+- **Solution Implemented**:
+  1. Added **`📊 PROCESS MONITOR`** top navigation tab.
+  2. Full interactive table with columns: `PID | PPID | NAME | TRUST | BAR | STATUS | ACTIONS`.
+  3. Real-time sorting by Trust (risk-first), Trust descending, PID, Name (A-Z), or Status.
+  4. Instant search/filter box and live PID counter badge.
+
+---
+
+### Request 4: AI History & Non-Security Question Accuracy
+- **User Issue**:
+  > *"WHAT PREVIOUS CONVERISON WE HAD LAST 10 CONVERSIONS GIVE ME... WHAT IS 3+2+1*123... GIVE ME PYTHON CODE... INC++... THE AI NOT GIVING CORRECT OP"*
+- **Root Cause**:
+  - LLM system prompt had strict security constraints placed *before* the user question, confusing general queries (math, C++) with process queries.
+  - History was not persisted across sessions, causing the 8B model to hallucinate previous dialogues.
+- **Solution Implemented**:
+  1. **History-First Prompt Structure**: Conversation history (up to last 16 messages) placed at the top of the prompt.
+  2. **General Question Handling**: Prompt explicitly instructs the model to answer math, programming, and general topics directly and accurately.
+  3. **Real `show history` Command**: Directly parses and displays the last 10 conversations from `data/session_analysis.jsonl` with zero hallucination.
+
+---
+
+### Request 5: Unified Database Telemetry & Storage (`internal/db/store.go`)
+- **User Issue**:
+  > *"WHY DONT U DO EVERY PROCESS AND ALL DETAILD STORE IN DB EVEN MY CONVERSATIONS SO WHEN I TRIED AI MODEL WILL CHECK THE DB GIVE DESIRED OUTPUTS"*
+- **Solution Implemented**:
+  1. Built **`internal/db/store.go`**:
+     - `ProcessRecord`: Tracks full process lifecycle, parent PID, child sub-PIDs, opened files map, network sockets map, total syscall count, trust history, and threat detections.
+     - `EventRecord`: Ingests and stores raw kernel events with circular ringbuffer retention.
+     - `ConversationRecord`: Persists all AI chat queries, model responses, timestamps, and target PIDs to `data/session_analysis.jsonl`.
+  2. **AI Telemetry Grounding**: In `cmd/sensor/main.go`, `database.SearchTelemetry(query, pid)` searches the local database and injects exact historical process records into the LLM prompt.
+
+---
+
+### Request 6: Production-Grade SIEM Provenance Graph (Solving the "Hairball Problem")
+- **User Issue**:
+  > *"NAV ITEMS HAS CASUAL GRAPH EMPTY BUT IN MAIN PAGE HAS THAT SO REMOVE THAT... LIVE EVENT STREAM AND RESPONSE DECSSIONS MAKE CENTER... UI DOES NOT SCROLLABLE MAKE IT SCROLABLE AND ON THAT BELOW GIVE CASUAL GRAPH IT SATISFY THE PRODUCTION GRADE GRAPH"*
+- **Solution Implemented**:
+  1. **Removed empty graph from top nav**.
+  2. **Scrollable Security Dashboard**:
+     - Top row (3 columns): Left (Process Classification), Center (Response Decisions + Live Event Stream), Right (AI Narration & Copilot Chat).
+     - Bottom row: Full-width **Production Causal Provenance Graph** (520px height).
+  3. **Production SIEM Graph Features**:
+     - **Hairball Filtering**: Prunes noisy disconnected background nodes. Focuses on Parent Daemons (purple `#8b5cf6`), Child Processes (indigo `#6366f1`), Network Sockets (cyan `#06b6d4`), and Active Threats (pulsing red `#ef4444`).
+     - **Filter Toggles**: `[All Provenance]`, `[⚠ Threats & Network Only]`, `[🌲 Parent-Child Trees]`.
+     - **Weighted Directed Edges**: `FORK_EXEC`, `CONNECT`, `WRITE_STAGING` with directional arrowheads.
+     - **Click-to-Inspect**: Clicking any graph node opens the Process Inspector modal directly.
+
+---
+
+### Request 7: Attack Patterns & Deep Hierarchical Process Tree View
+- **User Issue**:
+  > *"ADD NAV ITEM ATTACK PATTERN THAT IDENTIFIED IN PROCESS LIKE EXAMPLE BROWSER IT HAVE MORE PID AND DWM HAVE MORE PID SHOW ALL PARENT PROCESS INSIDE SHOW SUB PROCESS AND WHAT IS DOING WHAT ACESS IT HAS ALL"*
+- **Solution Implemented**:
+  1. Added **`🎯 ATTACK PATTERNS & TREE`** top navigation view.
+  2. **Attack Patterns Feed (`/api/db/attack_patterns`)**:
+     - Cards showing detected MITRE techniques (`T1105 Ingress Tool Transfer`, `T1071 C2 callbacks`, `T1053 Persistence`, `T1003 Credential access`).
+     - Severity badges (`CRITICAL`, `HIGH`), timestamp, evidence chips, and 1-click SOAR action buttons.
+  3. **Hierarchical Process Tree (`/api/db/tree`)**:
+     - Groups processes by root Parent PIDs (e.g. `systemd [1]`, `dwm [1020]`, `chrome [2082]`, `bash [308781]`).
+     - Expandable/collapsible subprocess branches with `[▼]`/`[▶]`.
+     - Shows accessed files tags (`📄 /tmp/installer.sh`), network sockets tags (`🌐 192.168.1.50:4444`), syscall count, and status badges.
+     - Search filter box and Expand/Collapse All buttons.
+
+---
+
+## 3. COMPLETE REPOSITORY STRUCTURE
 
 ```
-eBPF kernel programs (bpf/) 
-  ↓ ring buffer events
-Go sensor (cmd/sensor/main.go)
-  ├── CausalGraph (internal/graph/) — tracks process→file→socket relationships
-  ├── ResponseEngine (internal/response/engine.go) — makes trust decisions
-  │     ├── Trusts known processes (whitelist)
-  │     ├── Calls Python scorer via HTTP for ML anomaly score
-  │     ├── Conformal calibration → trust score 0-100
-  │     └── Actions: allow / log / pause (SIGSTOP) / kill (SIGKILL)
-  ├── Narrator (internal/narration/narrator.go) — LLM integration
-  │     └── QueryCopilot() → NVIDIA NIM API → natural language response
-  └── HTTP server → dashboard (static files) + REST API + SSE stream
-
-Python scorer (sidecar/scorer.py) — FastAPI on port 8099
-  └── Isolation Forest model from data/isolation_forest_model.joblib
+kernel-security-monitor/
+├── bpf/
+│   ├── sensor.c                  # eBPF tracepoints: execve, openat, connect
+│   ├── lsm.c                     # BPF-LSM for enforcement (deny_exec)
+│   ├── vmlinux.h                 # Kernel BTF types
+│   └── sensor.o, lsm.o           # Compiled BPF objects
+├── cmd/
+│   └── sensor/
+│       └── main.go               # Control plane, HTTP server, SSE hub, DB wiring
+├── internal/
+│   ├── db/
+│   │   └── store.go              # Unified Database (Process lifecycle, Tree, Attack Patterns)
+│   ├── graph/
+│   │   ├── graph.go              # CausalGraph node/edge structures
+│   │   └── features.go           # Syscall feature extractor for ML model
+│   ├── narration/
+│   │   ├── narrator.go           # LLM connector (NVIDIA NIM / Ollama / OpenAI)
+│   │   └── patterns.go           # MITRE ATT&CK rule matches
+│   ├── response/
+│   │   ├── engine.go             # Trust scoring, Whitelist, Pause/Kill/Allow SOAR
+│   │   └── log.go                # Decision and event logging
+│   └── sensor/
+│       ├── loader.go             # cilium/ebpf loader and ring buffer reader
+│       └── events.go             # RawEvent to Event parser
+├── sidecar/
+│   ├── scorer.py                 # FastAPI Isolation Forest scorer on :8099
+│   └── conformal.py              # Conformal calibration logic
+├── dashboard/
+│   ├── index.html                # Multi-view SIEM UI (Dashboard, htop, Patterns Tree)
+│   ├── app.js                    # UI state, D3 graph, tree rendering, SSE listeners
+│   ├── style.css                 # Dark cybersecurity design system
+│   └── d3.v7.min.js              # Bundled local D3 library
+├── data/
+│   ├── user_trust.json           # Whitelisted comms & PIDs
+│   ├── session_analysis.jsonl    # Persistent AI chat and telemetry history
+│   ├── isolation_forest_model.joblib # Pre-trained ML model
+│   └── calibration_scores.json   # Calibration thresholds
+├── scripts/
+│   ├── live_demo.sh              # Persistent attack simulation script
+│   └── demo_attack.sh            # Standard demo script
+├── Makefile                      # Build automation (make build, make live-demo)
+└── thinking.md                   # THIS FILE (Comprehensive Knowledge Base)
 ```
 
 ---
 
-## FILES AND THEIR PURPOSE
-
-| File | Purpose |
-|------|---------|
-| `cmd/sensor/main.go` | Main binary: loads eBPF, HTTP API, SSE stream, all endpoints |
-| `internal/response/engine.go` | Trust decisions: pause/kill/allow/log logic |
-| `internal/narration/narrator.go` | LLM connector — `QueryCopilot()` sends to NVIDIA NIM / OpenAI |
-| `internal/graph/graph.go` | CausalGraph — tracks which process opened which file/socket |
-| `sidecar/scorer.py` | FastAPI ML scorer on port 8099 |
-| `sidecar/conformal.py` | Conformal calibration for trust scores |
-| `dashboard/index.html` | Dashboard UI HTML with Process Inspector & Action Log |
-| `dashboard/app.js` | Dashboard logic — SSE, process table, AI chat, graph |
-| `dashboard/style.css` | All CSS — dark security aesthetic |
-| `data/user_trust.json` | Persistent user trust decisions (survive restarts) |
-| `data/isolation_forest_model.joblib` | Pre-trained ML anomaly model |
-| `data/calibration_scores.json` | Conformal calibration scores |
-| `thinking.md` | THIS FILE — knowledge base for LLM continuity |
-| `bpf/sensor.c` | eBPF tracepoints: execve, openat, connect |
-| `bpf/lsm.c` | BPF-LSM for enforcement (SIGKILL via deny_exec) |
-
----
-
-## API ENDPOINTS (complete list)
+## 4. API ENDPOINTS REFERENCE
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/trust` | List all process trust scores |
-| GET | `/api/decisions` | List response decisions |
-| GET | `/api/stats` | Graph node/edge stats |
-| GET | `/api/graph` | Full causal graph data |
-| GET | `/api/paused` | Currently SIGSTOP'd processes |
-| GET | `/api/actionlog` | Action log (kill/pause/trust/resume history) |
-| GET | `/api/mode` | Current mode (observe/pause/enforce) |
-| POST | `/api/mode` | Set mode: `{"mode":"pause"}` |
-| POST | `/api/chat` | AI chat: `{"query":"...", "pid":0}` |
-| POST | `/api/process/known` | Mark as trusted: `{"pid":0,"comm":"firefox"}` |
-| POST | `/api/process/pause` | SIGSTOP: `{"pid":1234,"comm":"..."}` |
-| POST | `/api/process/resume` | SIGCONT: `{"pid":1234}` |
-| POST | `/api/process/kill` | SIGKILL: `{"pid":1234,"comm":"..."}` |
-| GET | `/api/stream` | SSE event stream |
-| GET | `/` | Dashboard HTML |
+|---|---|---|
+| **GET** | `/` | Dashboard HTML application |
+| **GET** | `/api/db/tree` | Hierarchical Process Tree (Parent -> Children -> Files/Sockets) |
+| **GET** | `/api/db/attack_patterns` | Detected MITRE ATT&CK patterns list |
+| **GET** | `/api/db/graph` | Production SIEM Causal Graph data (Hairball-filtered) |
+| **GET** | `/api/trust` | List of tracked process trust scores |
+| **GET** | `/api/decisions` | Recent response decisions (last 50) |
+| **GET** | `/api/events` | Recent raw kernel events (last 50) |
+| **GET** | `/api/stats` | Causal graph node/edge counts |
+| **GET** | `/api/paused` | List of currently suspended processes (SIGSTOP) |
+| **GET** | `/api/actionlog` | SOAR action history (kills, pauses, resumes, trusts) |
+| **GET** | `/api/mode` | Current response mode (`observe`, `pause`, `enforce`) |
+| **POST** | `/api/mode` | Set response mode: `{"mode":"pause"}` |
+| **POST** | `/api/chat` | AI Copilot query with grounded DB telemetry |
+| **POST** | `/api/process/known` | Whitelist process: `{"pid":0,"comm":"chrome"}` |
+| **POST** | `/api/process/pause` | SIGSTOP process: `{"pid":1234,"comm":"..."}` |
+| **POST** | `/api/process/resume` | SIGCONT process: `{"pid":1234}` |
+| **POST** | `/api/process/kill` | SIGKILL process: `{"pid":1234,"comm":"..."}` |
+| **GET** | `/api/stream` | Server-Sent Events (SSE) live telemetry stream |
 
 ---
 
-## /api/chat — REAL COMMANDS (direct execution)
+## 5. REAL CHAT COMMANDS
 
-The chat handler has LOCAL command dispatch BEFORE calling the LLM:
-
-| Command pattern | What actually happens |
-|----------------|----------------------|
-| `trust python3` | Calls `TrustProcess("python3", 0)`, saves to disk |
-| `trust PID 1234` | Trusts specific PID |
-| `resume 1234` | SIGCONT to PID 1234, recorded in action log |
-| `unpause 1234` | Same as resume |
-| `pause 1234` | SIGSTOP to PID 1234, recorded in action log |
-| `suspend 1234` | Same as pause |
-| `kill 1234` | SIGKILL to PID 1234, recorded in action log |
-| `terminate 1234` | Same as kill |
-| `block all below 30` | SIGSTOP ALL processes with trust < 30 (bulk operation) |
-| `block all below 50` | Same with threshold 50 |
-| `pause all below 40` | Same pattern |
-| `show paused` | Returns REAL list from pausedPIDs map |
-| `currently paused` | Same |
-| `show paused processes` | Same |
-| `show action log` | Returns real ActionLogEntry list |
-| `show killed` | Same as action log |
-| `hi` / `hello` / `help` | Lists all commands + shows paused count |
-| anything else | Sent to NVIDIA NIM LLM with full real context |
-
----
-
-## engine.go — KEY TYPES AND METHODS
-
-```go
-// Modes
-const (
-    ModeObserve Mode = "observe"  // log only, no blocking
-    ModePause   Mode = "pause"    // SIGSTOP suspicious processes
-    ModeEnforce Mode = "enforce"  // SIGKILL threats
-)
-
-// ActionLogEntry — recorded for every user action
-type ActionLogEntry struct {
-    Timestamp time.Time
-    Action    string  // "kill", "pause", "resume", "trust"
-    PID       uint32
-    Comm      string
-    By        string  // "user", "system", "user-bulk"
-    Result    string  // "ok" or error message
-}
-
-// Key engine methods:
-engine.TrustProcess(comm, pid)        // whitelist a process
-engine.PauseProcess(pid, comm)        // SIGSTOP
-engine.ResumeProcess(pid)             // SIGCONT
-engine.KillProcess(pid, comm)         // SIGKILL
-engine.GetPausedProcesses()           // returns map[uint32]string (pid → comm)
-engine.GetSuspiciousBelow(threshold)  // returns []Decision with trust < threshold
-engine.GetActionLog(n)                // returns recent n ActionLogEntry
-engine.RecordAction(action, comm, pid, by, result) // manual log entry
-engine.SaveUserTrust()                // saves to data/user_trust.json
-engine.IsTrusted(comm, pid)           // check if whitelisted
-```
-
----
-
-## WHITELIST — isKnownProcess() in engine.go
-
-The whitelist is in `isKnownProcess()` function at the bottom of `engine.go`.
-**Any comm in this list gets trust=100 automatically and is never scored by ML.**
-
-Key patterns already whitelisted:
-- `(udev-worker)`, `(sd-worker)` — kernel worker threads shown with `()`
-- `dwmblocks`, `st`, `dmenu`, `rofi` — DWM ecosystem
-- `libuv-worker`, `InputThread`, `ThreadPoolForeg` — browser thread pools
-- `pipewire-pulse`, `pactl`, `logger`, `dirname`, `upowerd` — system daemons
-- All prefixes starting with `(` are trusted (covers ALL `(foo)` style kernel threads)
-- Prefixes: `Thread`, `Worker`, `libuv`, `Input`, `Compositor`, `Audio`, `sd-`
-
----
-
-## DASHBOARD — TABS AND PANELS
-
-**Left column**: Process Classification table + Response Decisions
-- Search bar: Filter processes instantly by PID or comm name
-- Process rows: Click any row to open the Process Inspector
-- Action buttons: [✅ Known] [⏸] [▶] [💀] [🔍]
-- Filter buttons: ALL | ⚠ SUSPICIOUS | ⏸ PAUSED | ✅ KNOWN
-
-**Center column**: D3 Causal Graph
-- Shows PROCESS and SOCKET nodes only (file nodes filtered out)
-- Color: trust<40=red, trust<70=amber, else indigo
-- Click a node → opens the Process Inspector modal
-
-**Right column**: Live Events | AI Chat/Narration | Action Log (3 tabs)
-- Tab 1: 🧠 AI NARRATION — ATT&CK narration from LLM
-- Tab 2: 💬 ASK AI — interactive chat with quick-chips
-- Tab 3: 📋 ACTION LOG — real-time kill/pause/trust/resume log
-
-**Top**: Amber banner when processes are paused (slides in/out automatically)
-**Mode button**: 🛡️ OBSERVE → ⏸ PAUSE → ⚡ ENFORCE (cycles on click)
-
----
-
-## ML SCORING — HOW IT WORKS
-
-1. eBPF event arrives → sensor extracts feature vector (syscall type, path, timing)
-2. `scorer.py` on port 8099 receives POST `/score` with feature vector
-3. Isolation Forest returns anomaly score → conformal calibration → p-value 0-1
-4. engine.go: p-value < 0.15 = suspicious, else unknown
-5. Trust score = 100 * p-value (roughly)
-6. **If process is in whitelist** → SKIP step 2-4, force trust=100
-
----
-
-## PERSISTENT TRUST — data/user_trust.json
-
-```json
-{
-  "known_comms": ["chrome", "node", "firefox"],
-  "known_pids": [],
-  "unknown_comms": []
-}
-```
-
-- Saved on every `TrustProcess()` call and `SaveUserTrust()` call
-- Loaded at startup: `LoadUserTrust()` in engine.go init
-- Path: `data/user_trust.json` (relative to working directory)
-
----
-
-## QUICK TEST COMMANDS (curl)
-
-```bash
-# Test greeting
-curl -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" -d '{"query":"hi"}' | python3 -m json.tool
-
-# Test block all below 30
-curl -s -X POST http://localhost:8080/api/chat -H "Content-Type: application/json" -d '{"query":"block all below 30"}' | python3 -m json.tool
-
-# Show paused
-curl -s http://localhost:8080/api/paused | python3 -m json.tool
-
-# Show action log
-curl -s http://localhost:8080/api/actionlog | python3 -m json.tool
-
-# Kill process
-curl -s -X POST http://localhost:8080/api/process/kill -H "Content-Type: application/json" -d '{"pid":9999,"comm":"test"}' | python3 -m json.tool
-
-# Mark as known
-curl -s -X POST http://localhost:8080/api/process/known -H "Content-Type: application/json" -d '{"pid":0,"comm":"chrome"}' | python3 -m json.tool
-
-# Switch to pause mode
-curl -s -X POST http://localhost:8080/api/mode -H "Content-Type: application/json" -d '{"mode":"pause"}' | python3 -m json.tool
-```
+| Chat Command | Real Action Executed |
+|---|---|
+| `show history` | Reads last 10 conversations from `data/session_analysis.jsonl` |
+| `show paused` | Lists all currently suspended PIDs (SIGSTOP) |
+| `show action log` | Displays audit log of all kill/pause/resume/trust actions |
+| `trust <comm>` | Whitelists process across restarts (`data/user_trust.json`) |
+| `pause <pid>` | Sends `SIGSTOP` to suspend process |
+| `resume <pid>` | Sends `SIGCONT` to resume process |
+| `kill <pid>` | Sends `SIGKILL` to terminate process |
+| `block all below <N>` | Bulk `SIGSTOP` for all processes with trust < N |
+| `hi` / `help` | Lists available real commands and system mode |
+| Any general question | Answered directly by AI Copilot with DB telemetry grounding |
