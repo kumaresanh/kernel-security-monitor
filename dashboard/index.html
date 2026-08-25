@@ -33,8 +33,7 @@
                     </svg>
                 </div>
                 <h1>KERNEL SECURITY MONITOR</h1>
-                <span class="header-subtitle">eBPF PROCESS MONITORING & RESPONSE</span>
-                <!-- Mode toggle: cycles observe → pause → enforce → observe -->
+                <span class="header-subtitle">eBPF PROCESS MONITORING &amp; RESPONSE</span>
                 <button id="mode-toggle-btn" class="mode-btn observe" title="Click to cycle: Observe → Pause → Enforce">
                     <span class="mode-icon">🛡️</span>
                     <span id="mode-label">OBSERVE MODE</span>
@@ -62,166 +61,198 @@
 
         <!-- Stats Bar -->
         <div id="stats-bar">
-            <div class="stat-card" id="stat-processes">
-                <span class="stat-value">0</span>
-                <span class="stat-label">PROCESSES</span>
-            </div>
-            <div class="stat-card" id="stat-files">
-                <span class="stat-value">0</span>
-                <span class="stat-label">FILES</span>
-            </div>
-            <div class="stat-card" id="stat-sockets">
-                <span class="stat-value">0</span>
-                <span class="stat-label">SOCKETS</span>
-            </div>
-            <div class="stat-card" id="stat-edges">
-                <span class="stat-value">0</span>
-                <span class="stat-label">CAUSAL EDGES</span>
-            </div>
-            <div class="stat-card alert" id="stat-alerts">
-                <span class="stat-value">0</span>
-                <span class="stat-label">ALERTS</span>
-            </div>
-            <div class="stat-card paused-stat" id="stat-paused">
-                <span class="stat-value">0</span>
-                <span class="stat-label">⏸ PAUSED</span>
-            </div>
+            <div class="stat-card" id="stat-processes"><span class="stat-value">0</span><span class="stat-label">PROCESSES</span></div>
+            <div class="stat-card" id="stat-files"><span class="stat-value">0</span><span class="stat-label">FILES</span></div>
+            <div class="stat-card" id="stat-sockets"><span class="stat-value">0</span><span class="stat-label">SOCKETS</span></div>
+            <div class="stat-card" id="stat-edges"><span class="stat-value">0</span><span class="stat-label">CAUSAL EDGES</span></div>
+            <div class="stat-card alert" id="stat-alerts"><span class="stat-value">0</span><span class="stat-label">ALERTS</span></div>
+            <div class="stat-card paused-stat" id="stat-paused"><span class="stat-value">0</span><span class="stat-label">⏸ PAUSED</span></div>
         </div>
 
-        <!-- Paused Processes Alert Banner (hidden when empty) -->
+        <!-- Paused Banner -->
         <div id="paused-banner" class="paused-banner hidden">
             <div class="paused-banner-title">⏸ SUSPENDED PROCESSES — Awaiting Your Decision</div>
             <div id="paused-banner-list" class="paused-banner-list"></div>
         </div>
 
-        <!-- Main Grid -->
-        <div id="main-grid">
-            <!-- Left Column: Process Classification Table + Decisions -->
-            <div class="column" id="col-left">
-                <!-- Process Classification Overview -->
-                <section class="panel" id="trust-panel">
-                    <div class="panel-header">
-                        <h2>PROCESS CLASSIFICATION</h2>
-                        <div class="filter-controls">
-                            <button class="filter-btn active" data-filter="all">ALL</button>
-                            <button class="filter-btn" data-filter="suspicious">⚠ SUSPICIOUS</button>
-                            <button class="filter-btn" data-filter="paused">⏸ PAUSED</button>
-                            <button class="filter-btn" data-filter="known">✅ KNOWN</button>
-                        </div>
-                    </div>
-                    <div class="panel-search-bar">
-                        <input type="text" id="process-search-input" placeholder="🔍 Search PID or name (e.g. chrome, 1234)..." autocomplete="off" />
-                    </div>
-                    <div class="panel-body scrollable" id="trust-scores-container">
-                        <div class="empty-state">Waiting for sensor events...</div>
-                    </div>
-                </section>
+        <!-- ===== TOP NAVIGATION BAR ===== -->
+        <nav id="top-nav">
+            <button class="top-nav-btn active" data-view="security" id="nav-security">🛡️ SECURITY VIEW</button>
+            <button class="top-nav-btn" data-view="processes" id="nav-processes">
+                📊 PROCESS MONITOR <span class="nav-badge" id="htop-count">0</span>
+            </button>
+            <button class="top-nav-btn" data-view="graph" id="nav-graph">🕸️ CAUSAL GRAPH</button>
+        </nav>
 
-                <!-- Response Decisions Panel -->
-                <section class="panel" id="decisions-panel">
-                    <div class="panel-header">
-                        <h2>RESPONSE DECISIONS</h2>
-                        <span class="panel-badge live">LIVE</span>
-                    </div>
-                    <div class="panel-body scrollable" id="decisions-container">
-                        <div class="empty-state">No decisions yet...</div>
-                    </div>
-                </section>
-            </div>
-
-            <!-- Center Column: Causal Graph -->
-            <div class="column" id="col-center">
-                <section class="panel full-height" id="graph-panel">
-                    <div class="panel-header">
-                        <h2>CAUSAL PROVENANCE GRAPH</h2>
-                        <div class="graph-legend">
-                            <span class="legend-item"><span class="dot process"></span>Process</span>
-                            <span class="legend-item"><span class="dot socket"></span>Network</span>
-                            <button id="reset-graph-btn" class="mini-btn">Reset View</button>
-                        </div>
-                    </div>
-                    <div class="panel-body graph-body" id="graph-container">
-                        <svg id="causal-graph"></svg>
-                    </div>
-                </section>
-            </div>
-
-            <!-- Right Column: Events + AI Narration / Interactive Chat -->
-            <div class="column" id="col-right">
-                <!-- Live Event Stream -->
-                <section class="panel" id="events-panel">
-                    <div class="panel-header">
-                        <h2>LIVE EVENT STREAM</h2>
-                        <span class="panel-badge live">SSE</span>
-                    </div>
-                    <div class="panel-body scrollable" id="events-container">
-                        <div class="empty-state">Connecting to event stream...</div>
-                    </div>
-                </section>
-
-                <!-- AI Narration & Chat Panel (Dual Tab) -->
-                <section class="panel" id="narration-panel">
-                    <div class="panel-header">
-                        <div class="tab-headers">
-                            <button class="tab-btn active" data-tab="narration">🧠 AI NARRATION</button>
-                            <button class="tab-btn" data-tab="chat">💬 ASK AI</button>
-                            <button class="tab-btn" data-tab="action-log">📋 ACTION LOG</button>
-                        </div>
-                        <span class="panel-badge" id="llm-badge">LLM ACTIVE</span>
-                    </div>
-
-                    <!-- Tab 1: Live Narration Feed -->
-                    <div class="panel-body tab-content active" id="tab-narration">
-                        <div id="narration-container">
-                            <div class="empty-state">
-                                <span class="narration-icon">🧠</span>
-                                ATT&CK-grounded AI narrative will appear for suspicious events.
+        <!-- ===== VIEW: SECURITY ===== -->
+        <div id="view-security" class="main-view active">
+            <div id="main-grid">
+                <!-- Left: Process Classification -->
+                <div class="column" id="col-left">
+                    <section class="panel" id="trust-panel">
+                        <div class="panel-header">
+                            <h2>PROCESS CLASSIFICATION</h2>
+                            <div class="filter-controls">
+                                <button class="filter-btn active" data-filter="all">ALL</button>
+                                <button class="filter-btn" data-filter="suspicious">⚠ SUSPICIOUS</button>
+                                <button class="filter-btn" data-filter="paused">⏸ PAUSED</button>
+                                <button class="filter-btn" data-filter="known">✅ KNOWN</button>
                             </div>
                         </div>
-                    </div>
+                        <div class="panel-search-bar">
+                            <input type="text" id="process-search-input" placeholder="🔍 Search PID or name..." autocomplete="off" />
+                        </div>
+                        <div class="panel-hint">Click any process row to open full details ↗</div>
+                        <div class="panel-body scrollable" id="trust-scores-container">
+                            <div class="empty-state">Waiting for sensor events...</div>
+                        </div>
+                    </section>
+                    <section class="panel" id="decisions-panel">
+                        <div class="panel-header">
+                            <h2>RESPONSE DECISIONS</h2>
+                            <span class="panel-badge live">LIVE</span>
+                        </div>
+                        <div class="panel-body scrollable" id="decisions-container">
+                            <div class="empty-state">No decisions yet...</div>
+                        </div>
+                    </section>
+                </div>
 
-                    <!-- Tab 2: Interactive AI Security Chat -->
-                    <div class="panel-body tab-content" id="tab-chat">
-                        <div id="chat-messages-container" class="chat-messages">
-                            <div class="chat-bubble ai">
-                                <strong>Kernel Security AI:</strong> Hello! Type <code>hi</code> for full command list. Real commands: <code>trust node</code>, <code>block all below 30</code>, <code>resume 1234</code>, <code>kill 1234</code>, <code>show paused</code>.
+                <!-- Center: Event Stream + AI -->
+                <div class="column" id="col-center">
+                    <section class="panel" id="events-panel">
+                        <div class="panel-header">
+                            <h2>LIVE EVENT STREAM</h2>
+                            <span class="panel-badge live">SSE</span>
+                        </div>
+                        <div class="panel-body scrollable" id="events-container">
+                            <div class="empty-state">Connecting to event stream...</div>
+                        </div>
+                    </section>
+                    <section class="panel" id="narration-panel">
+                        <div class="panel-header">
+                            <div class="tab-headers">
+                                <button class="tab-btn active" data-tab="narration">🧠 AI NARRATION</button>
+                                <button class="tab-btn" data-tab="chat">💬 ASK AI</button>
+                                <button class="tab-btn" data-tab="action-log">📋 ACTION LOG</button>
+                            </div>
+                            <span class="panel-badge" id="llm-badge">LLM ACTIVE</span>
+                        </div>
+                        <div class="panel-body tab-content active" id="tab-narration">
+                            <div id="narration-container">
+                                <div class="empty-state"><span class="narration-icon">🧠</span>ATT&amp;CK-grounded AI narrative will appear for suspicious events.</div>
                             </div>
                         </div>
-                        <div class="chat-quick-actions">
-                            <button class="quick-chip" data-q="show paused">⏸ Paused</button>
-                            <button class="quick-chip" data-q="show action log">📋 Log</button>
-                            <button class="quick-chip" data-q="block all below 30">🛡 Block&lt;30</button>
-                            <button class="quick-chip" data-q="Any suspicious activity right now?">⚠ Threats</button>
-                            <button class="quick-chip" data-q="hi">Help</button>
+                        <div class="panel-body tab-content" id="tab-chat">
+                            <div id="chat-messages-container" class="chat-messages">
+                                <div class="chat-bubble ai"><strong>Kernel Security AI:</strong> Hello! Type <code>hi</code> for full command list.</div>
+                            </div>
+                            <div class="chat-quick-actions">
+                                <button class="quick-chip" data-q="show paused">⏸ Paused</button>
+                                <button class="quick-chip" data-q="show action log">📋 Log</button>
+                                <button class="quick-chip" data-q="block all below 30">🛡 Block&lt;30</button>
+                                <button class="quick-chip" data-q="Any suspicious activity right now?">⚠ Threats</button>
+                                <button class="quick-chip" data-q="hi">Help</button>
+                            </div>
+                            <form id="chat-form" class="chat-input-row">
+                                <input type="text" id="chat-input" placeholder="trust node / kill 1234 / resume 1234 / show paused" autocomplete="off" />
+                                <button type="submit" id="chat-send-btn">Send</button>
+                            </form>
                         </div>
-                        <form id="chat-form" class="chat-input-row">
-                            <input type="text" id="chat-input" placeholder="trust node / block all below 30 / resume 1234 / kill 1234" autocomplete="off" />
-                            <button type="submit" id="chat-send-btn">Send</button>
-                        </form>
-                    </div>
+                        <div class="panel-body tab-content scrollable" id="tab-action-log">
+                            <div id="action-log-container">
+                                <div class="empty-state">No actions yet.</div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
 
-                    <!-- Tab 3: Action Log (kills, pauses, trusts) -->
-                    <div class="panel-body tab-content scrollable" id="tab-action-log">
-                        <div id="action-log-container">
-                            <div class="empty-state">No actions yet. Kill/Pause/Trust events will appear here.</div>
+                <!-- Right: Mini Graph -->
+                <div class="column" id="col-right">
+                    <section class="panel full-height" id="graph-panel-mini">
+                        <div class="panel-header">
+                            <h2>CAUSAL GRAPH</h2>
+                            <div class="graph-legend">
+                                <span class="legend-item"><span class="dot process"></span>Process</span>
+                                <span class="legend-item"><span class="dot socket"></span>Network</span>
+                                <button id="reset-graph-btn" class="mini-btn">Reset View</button>
+                            </div>
                         </div>
-                    </div>
-                </section>
+                        <div class="panel-body graph-body" id="graph-container">
+                            <svg id="causal-graph"></svg>
+                        </div>
+                    </section>
+                </div>
             </div>
+        </div>
+
+        <!-- ===== VIEW: PROCESS MONITOR (htop-like) ===== -->
+        <div id="view-processes" class="main-view">
+            <section class="panel htop-panel">
+                <div class="panel-header">
+                    <h2>📊 PROCESS MONITOR — All Tracked Processes</h2>
+                    <div class="htop-controls">
+                        <input type="text" id="htop-search" placeholder="🔍 Filter by name or PID..." autocomplete="off" />
+                        <select id="htop-sort" class="htop-select">
+                            <option value="trust">Sort: Trust ↑ (most risky first)</option>
+                            <option value="trust-desc">Sort: Trust ↓ (safest first)</option>
+                            <option value="pid">Sort: PID</option>
+                            <option value="comm">Sort: Name A-Z</option>
+                            <option value="status">Sort: Status</option>
+                        </select>
+                        <span class="htop-live-badge">🟢 LIVE</span>
+                    </div>
+                </div>
+                <div class="htop-table-wrapper">
+                    <table class="htop-table" id="htop-table">
+                        <thead>
+                            <tr>
+                                <th class="htop-th">PID</th>
+                                <th class="htop-th">PPID</th>
+                                <th class="htop-th">NAME</th>
+                                <th class="htop-th">TRUST</th>
+                                <th class="htop-th htop-bar-col">TRUST BAR</th>
+                                <th class="htop-th">STATUS</th>
+                                <th class="htop-th htop-actions-col">ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="htop-tbody">
+                            <tr><td colspan="7" class="htop-empty">Waiting for processes...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <!-- ===== VIEW: CAUSAL GRAPH fullscreen ===== -->
+        <div id="view-graph" class="main-view">
+            <section class="panel graph-fullscreen-panel">
+                <div class="panel-header">
+                    <h2>🕸️ CAUSAL PROVENANCE GRAPH</h2>
+                    <div class="graph-legend">
+                        <span class="legend-item"><span class="dot process"></span>Process</span>
+                        <span class="legend-item"><span class="dot socket"></span>Network</span>
+                        <button id="reset-graph-full-btn" class="mini-btn">Reset View</button>
+                    </div>
+                </div>
+                <div class="panel-body graph-body graph-body-fullscreen" id="graph-container-full">
+                    <svg id="causal-graph-full"></svg>
+                </div>
+            </section>
         </div>
 
         <!-- Footer -->
         <footer id="novelty-footer">
             <div class="novelty-content">
                 <strong>MODE GUIDE:</strong>
-                🛡️ <strong>OBSERVE</strong> — Monitor only, never blocks.
-                ⏸ <strong>PAUSE</strong> — SIGSTOP suspicious processes until YOU approve.
-                ⚡ <strong>ENFORCE</strong> — Auto-kill confirmed threats via BPF-LSM.
-                Click the mode button in the header to cycle.
+                🛡️ <strong>OBSERVE</strong> — Monitor only.
+                ⏸ <strong>PAUSE</strong> — SIGSTOP suspicious until YOU approve.
+                ⚡ <strong>ENFORCE</strong> — Auto-kill confirmed threats.
+                | <strong>NAV:</strong> Use top tabs to switch views. Click any process row for full details.
             </div>
         </footer>
 
-        <!-- Process Inspector Modal / Slideout -->
+        <!-- ===== PROCESS INSPECTOR MODAL ===== -->
         <div id="inspector-modal" class="inspector-modal hidden">
             <div class="inspector-overlay" id="insp-overlay"></div>
             <div class="inspector-card">
@@ -233,36 +264,65 @@
                     <button id="insp-close-btn" class="mini-btn">&times;</button>
                 </div>
                 <div class="inspector-body">
-                    <div class="insp-row">
-                        <span class="insp-label">Process Comm:</span>
-                        <span class="insp-val highlight" id="insp-comm">-</span>
-                    </div>
-                    <div class="insp-row">
-                        <span class="insp-label">PID / PPID:</span>
-                        <span class="insp-val" id="insp-pids">-</span>
-                    </div>
-                    <div class="insp-row">
-                        <span class="insp-label">Security Status:</span>
-                        <span class="insp-val" id="insp-status">-</span>
-                    </div>
-                    <div class="insp-row">
-                        <span class="insp-label">Trust Score:</span>
-                        <div class="insp-trust-row">
-                            <div class="trust-mini-bar"><div class="trust-mini-fill" id="insp-trust-bar"></div></div>
-                            <span class="insp-val" id="insp-trust">-</span>
+                    <div class="insp-two-col">
+                        <!-- Left: Process Info -->
+                        <div class="insp-section">
+                            <div class="insp-section-title">PROCESS INFO</div>
+                            <div class="insp-row">
+                                <span class="insp-label">Process Name:</span>
+                                <span class="insp-val highlight" id="insp-comm">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">PID / PPID:</span>
+                                <span class="insp-val" id="insp-pids">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">Security Status:</span>
+                                <span class="insp-val" id="insp-status">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">Trust Score:</span>
+                                <div class="insp-trust-row">
+                                    <div class="trust-mini-bar insp-bar"><div class="trust-mini-fill" id="insp-trust-bar"></div></div>
+                                    <span class="insp-val" id="insp-trust">-</span>
+                                </div>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">First Seen:</span>
+                                <span class="insp-val" id="insp-first-seen">-</span>
+                            </div>
+                        </div>
+                        <!-- Right: Threat Analysis -->
+                        <div class="insp-section">
+                            <div class="insp-section-title">⚠ THREAT ANALYSIS</div>
+                            <div class="insp-row">
+                                <span class="insp-label">MITRE ATT&amp;CK:</span>
+                                <span class="insp-val" id="insp-technique">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">Why Flagged:</span>
+                                <span class="insp-val insp-reason-val" id="insp-reason">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">Last Action:</span>
+                                <span class="insp-val" id="insp-action">-</span>
+                            </div>
+                            <div class="insp-row">
+                                <span class="insp-label">P-Value:</span>
+                                <span class="insp-val" id="insp-pvalue">-</span>
+                            </div>
                         </div>
                     </div>
+                    <!-- Control Actions -->
                     <div class="insp-actions-section">
                         <div class="insp-section-title">CONTROL ACTIONS:</div>
-                        <div class="insp-actions" id="insp-actions-container">
-                            <!-- Injected dynamically -->
-                        </div>
+                        <div class="insp-actions" id="insp-actions-container"></div>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
 
+    </div>
     <script src="app.js"></script>
 </body>
 </html>

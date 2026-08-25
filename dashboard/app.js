@@ -7,7 +7,7 @@
     // ---- State ----
     const state = {
         mode: 'observe',
-        trustScores: {},   // pid -> {comm, ppid, trust, status, tier, color, paused}
+        trustScores: {},   // pid -> {comm, ppid, trust, status, tier, paused, killed, technique, action, pvalue}
         decisions: [],
         events: [],
         narrations: [],
@@ -19,8 +19,10 @@
         pausedCount: 0,
         currentFilter: 'all',
         currentTab: 'narration',
+        currentView: 'security',
         rateInfo: { processed: 0, dropped: 0 },
-        pausedProcesses: []  // [{pid, comm}]
+        pausedProcesses: [],
+        chatHistory: []   // [{role:'user'|'ai', text:'...'}]
     };
 
     // ---- DOM refs ----
@@ -43,6 +45,11 @@
     const $inspOverlay = document.getElementById('insp-overlay');
 
     let searchTerm = '';
+    let htopSearchTerm = '';
+    let htopSortBy = 'trust';
+    let trustContainerHovered = false;
+    let renderPending = false;
+    let renderDebounceTimer = null;
 
     // ---- Init ----
     document.addEventListener('DOMContentLoaded', () => {
@@ -52,6 +59,7 @@
         initFilters();
         initSearch();
         initInspector();
+        initTopNav();
         initSSE();
         initGraph();
         fetchInitialData();
@@ -60,7 +68,32 @@
         setInterval(fetchStats, 2500);
         setInterval(fetchPausedProcesses, 2000);
         setInterval(fetchActionLog, 3000);
+
+        if ($trustContainer) {
+            $trustContainer.addEventListener('mouseenter', () => { trustContainerHovered = true; });
+            $trustContainer.addEventListener('mouseleave', () => {
+                trustContainerHovered = false;
+                if (renderPending) {
+                    renderPending = false;
+                    renderTrustScores();
+                    renderHtop();
+                }
+            });
+        }
     });
+
+    // ---- Top Nav ----
+    function initTopNav() {
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                state.currentView = btn.dataset.view;
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+                document.getElementById(`view-${state.currentView}`).classList.add('active');
+            });
+        });
+    }
 
     // ---- Mode Toggle (cycles: observe → pause → enforce → observe) ----
     const modeCycle = ['observe', 'pause', 'enforce'];
@@ -165,18 +198,35 @@
     function openProcessInspector(entry) {
         if (!entry || !$inspectorModal) return;
         const tier = getTrustTier(entry.trust);
-        const status = entry.paused ? 'paused' : (entry.status || (entry.trust > 75 ? 'known' : 'unknown'));
+        const status = entry.killed ? 'killed' : (entry.paused ? 'paused' : (entry.status || (entry.trust > 75 ? 'known' : 'unknown')));
         const isPaused = status === 'paused' || entry.paused;
         const isKnown = status === 'known';
 
-        const statusEmoji = {
-            'known': '🟢', 'unknown': '🟡', 'suspicious': '🔴', 'paused': '⏸'
-        }[status] || '🟡';
+        const statusEmoji = { 'known': '🟢', 'unknown': '🟡', 'suspicious': '🔴', 'paused': '⏸', 'killed': '☠️' }[status] || '🟡';
 
         setText('#insp-comm', entry.comm || 'Unknown');
         setText('#insp-pids', `PID ${entry.pid}${entry.ppid ? ` (Parent PID: ${entry.ppid})` : ''}`);
         setText('#insp-status', `${statusEmoji} ${status.toUpperCase()}`);
         setText('#insp-trust', `${Math.round(entry.trust)}% (${tier})`);
+        setText('#insp-first-seen', entry.firstSeen ? new Date(entry.firstSeen).toLocaleTimeString() : 'Unknown');
+
+        // Threat analysis fields
+        const tech = entry.technique || entry.techniqueID;
+        const techDesc = entry.techniqueDesc || '';
+        setText('#insp-technique', tech ? `${tech}${techDesc ? ' — ' + techDesc : ''}` : 'None detected');
+        const reasonMap = {
+            'observe_critical': 'Anomaly score below threshold — unusual behavior pattern detected',
+            'paused_sigstop': 'Suspended by monitor — awaiting user decision',
+            'kill': 'Killed — exceeded threat threshold',
+            'verified_kill': 'Killed — confirmed malicious behavior',
+            'trusted_allow': 'Known/trusted process — whitelisted',
+            'observe_log': 'Logged for observation — low anomaly score',
+            'observe_alert': 'Alert — moderate anomaly, monitoring closely'
+        };
+        setText('#insp-reason', reasonMap[entry.action || ''] || (entry.trust < 40 ? 'High anomaly score from ML model' : entry.trust < 70 ? 'Moderate anomaly score — monitoring' : 'No significant threat indicators'));
+        setText('#insp-action', entry.action || '-');
+        const pval = entry.pvalue !== undefined && entry.pvalue !== null ? Number(entry.pvalue).toFixed(4) : '-';
+        setText('#insp-pvalue', pval);
 
         const bar = document.getElementById('insp-trust-bar');
         if (bar) {
@@ -280,11 +330,15 @@
         const chatTabBtn = document.querySelector('.tab-btn[data-tab="chat"]');
         if (chatTabBtn) chatTabBtn.click();
 
+        // Push to history before sending
+        state.chatHistory.push({ role: 'user', text: query });
+        if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
+
         appendChatMessage('user', query);
         const loadingBubble = appendChatMessage('ai loading', '⏳ Analysing with AI...');
 
         try {
-            const body = { query };
+            const body = { query, history: state.chatHistory.slice(-10) };
             if (pid) body.pid = pid;
 
             const resp = await fetch('/api/chat', {
@@ -300,6 +354,9 @@
                 const data = await resp.json();
                 const text = data.response || 'Analysis complete.';
                 loadingBubble.innerHTML = `<strong>Kernel Security AI:</strong> ${escapeHtml(text).replace(/\n/g, '<br>')}`;
+                // Save AI reply to history
+                state.chatHistory.push({ role: 'ai', text });
+                if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
             } else {
                 loadingBubble.innerHTML = '<strong>Kernel Security AI:</strong> ⚠️ Request failed. Check that LLM_API_KEY is set.';
             }
@@ -308,7 +365,7 @@
             loadingBubble.classList.add('ai');
             loadingBubble.innerHTML = '<strong>Kernel Security AI:</strong> ⚠️ Could not reach monitor backend.';
         }
-        $chatMessages.scrollTop = $chatMessages.scrollHeight;
+        if ($chatMessages) $chatMessages.scrollTop = $chatMessages.scrollHeight;
     }
 
     function appendChatMessage(type, text) {
@@ -512,16 +569,25 @@
         }
 
         if (decision && evt) {
-            state.trustScores[evt.pid] = {
-                pid: evt.pid,
-                ppid: evt.ppid || 0,
-                comm: evt.comm,
-                trust: decision.trust_score,
-                status: decision.status || 'unknown',
-                tier: getTrustTier(decision.trust_score),
-                paused: decision.status === 'paused'
-            };
-            renderTrustScores();
+            const existing = state.trustScores[evt.pid] || {};
+            if (!existing.killed) { // don't overwrite killed state
+                state.trustScores[evt.pid] = {
+                    pid: evt.pid,
+                    ppid: evt.ppid || 0,
+                    comm: evt.comm,
+                    trust: decision.trust_score,
+                    status: decision.status || 'unknown',
+                    tier: getTrustTier(decision.trust_score),
+                    paused: decision.status === 'paused',
+                    killed: false,
+                    technique: decision.technique_id || '',
+                    techniqueDesc: decision.technique || '',
+                    action: decision.action || '',
+                    pvalue: decision.conformal_p_value,
+                    firstSeen: existing.firstSeen || new Date().toISOString()
+                };
+            }
+            scheduledRender();
         }
     }
 
@@ -589,6 +655,158 @@
         });
     }
 
+    // ---- Top Navigation ----
+    function initTopNav() {
+        document.querySelectorAll('.top-nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const view = btn.dataset.view;
+                state.currentView = view;
+                document.querySelectorAll('.top-nav-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+                const target = document.getElementById(`view-${view}`);
+                if (target) target.classList.add('active');
+                if (view === 'processes') renderHtop();
+            });
+        });
+    }
+
+    // ---- htop Controls ----
+    function initHtopControls() {
+        const $hs = document.getElementById('htop-search');
+        const $sort = document.getElementById('htop-sort');
+        if ($hs) $hs.addEventListener('input', e => { htopSearchTerm = e.target.value.toLowerCase().trim(); renderHtop(); });
+        if ($sort) $sort.addEventListener('change', e => { htopSortBy = e.target.value; renderHtop(); });
+        // Hover lock for htop tbody
+        const $tbody = document.getElementById('htop-tbody');
+        if ($tbody) {
+            $tbody.addEventListener('mouseenter', () => { trustContainerHovered = true; });
+            $tbody.addEventListener('mouseleave', () => {
+                trustContainerHovered = false;
+                if (renderPending) { renderPending = false; renderHtop(); }
+            });
+        }
+    }
+
+    // ---- Scheduled render (debounced + hover-aware) ----
+    function scheduledRender() {
+        if (trustContainerHovered) {
+            renderPending = true;
+            return;
+        }
+        clearTimeout(renderDebounceTimer);
+        renderDebounceTimer = setTimeout(() => {
+            renderTrustScores();
+            if (state.currentView === 'processes') renderHtop();
+        }, 800);
+    }
+
+    // ---- htop-like Process Monitor ----
+    function renderHtop() {
+        const $tbody = document.getElementById('htop-tbody');
+        const $count = document.getElementById('htop-count');
+        if (!$tbody) return;
+
+        let entries = Object.values(state.trustScores).filter(e => !e.killed);
+        if ($count) $count.textContent = entries.length;
+
+        // Filter
+        if (htopSearchTerm) {
+            entries = entries.filter(e =>
+                (e.comm && e.comm.toLowerCase().includes(htopSearchTerm)) ||
+                String(e.pid).includes(htopSearchTerm)
+            );
+        }
+
+        // Sort
+        entries.sort((a, b) => {
+            switch (htopSortBy) {
+                case 'trust': return a.trust - b.trust; // most risky first
+                case 'trust-desc': return b.trust - a.trust;
+                case 'pid': return a.pid - b.pid;
+                case 'comm': return (a.comm||'').localeCompare(b.comm||'');
+                case 'status': return (a.status||'').localeCompare(b.status||'');
+                default: return a.trust - b.trust;
+            }
+        });
+
+        if (entries.length === 0) {
+            $tbody.innerHTML = `<tr><td colspan="7" class="htop-empty">No processes tracked yet. Run the monitor and events will appear.</td></tr>`;
+            return;
+        }
+
+        $tbody.innerHTML = '';
+        entries.forEach(entry => {
+            const tier = getTrustTier(entry.trust);
+            const status = entry.paused ? 'paused' : (entry.status || 'unknown');
+            const isPaused = status === 'paused';
+            const isKnown = status === 'known';
+
+            const statusColors = { known: '#10b981', unknown: '#f59e0b', suspicious: '#ef4444', paused: '#6366f1' };
+            const sColor = statusColors[status] || '#94a3b8';
+
+            const tr = document.createElement('tr');
+            tr.className = `htop-tr${ status === 'suspicious' ? ' htop-row-suspicious' : ''}${isPaused ? ' htop-row-paused' : ''}${isKnown ? ' htop-row-known' : ''}`;
+            tr.title = 'Click to open Process Inspector';
+            tr.innerHTML = `
+                <td class="htop-td htop-td-pid">${entry.pid}</td>
+                <td class="htop-td htop-td-ppid">${entry.ppid || '-'}</td>
+                <td class="htop-td htop-td-comm" title="${escapeHtml(entry.comm)}">${escapeHtml(entry.comm || '?')}</td>
+                <td class="htop-td htop-td-trust ${tier}">${Math.round(entry.trust)}</td>
+                <td class="htop-bar-cell">
+                    <div class="htop-bar"><div class="htop-bar-fill ${tier}" style="width:${Math.max(3,entry.trust)}%"></div></div>
+                </td>
+                <td class="htop-td" style="color:${sColor};font-weight:700;font-size:10px">${status.toUpperCase()}</td>
+                <td class="htop-actions-td">
+                    ${!isKnown ? `<button class="row-btn known-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Trust">✅</button>` : ''}
+                    ${!isPaused ? `<button class="row-btn pause-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Suspend">⏸</button>` : ''}
+                    ${isPaused ? `<button class="row-btn resume-btn htop-act" data-pid="${entry.pid}" title="Resume">▶</button>` : ''}
+                    <button class="row-btn kill-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Kill">💀</button>
+                    <button class="row-btn ask-btn htop-act" data-pid="${entry.pid}" data-comm="${escapeHtml(entry.comm)}" title="Ask AI">🔍</button>
+                </td>
+            `;
+
+            // Row click → inspector (not on action buttons)
+            tr.addEventListener('click', e => {
+                if (e.target.classList.contains('htop-act')) return;
+                openProcessInspector(entry);
+            });
+
+            // Wire action buttons
+            tr.querySelectorAll('.htop-act').forEach(btn => {
+                btn.addEventListener('click', async e => {
+                    e.stopPropagation();
+                    const pid = parseInt(btn.dataset.pid);
+                    const comm = btn.dataset.comm || '';
+                    if (btn.classList.contains('known-btn')) {
+                        await markAsKnown(comm, pid);
+                        await fetchTrustScores(); await fetchActionLog();
+                    } else if (btn.classList.contains('pause-btn')) {
+                        await pauseProcess(pid, comm);
+                        await fetchPausedProcesses(); await fetchActionLog();
+                    } else if (btn.classList.contains('resume-btn')) {
+                        await resumeProcess(pid);
+                        await fetchPausedProcesses();
+                    } else if (btn.classList.contains('kill-btn')) {
+                        if (!confirm(`SIGKILL '${comm}' (PID ${pid})?`)) return;
+                        state.trustScores[pid].killed = true;
+                        renderHtop();
+                        await killProcess(pid, comm);
+                        setTimeout(() => { delete state.trustScores[pid]; renderHtop(); }, 8000);
+                        await fetchActionLog();
+                    } else if (btn.classList.contains('ask-btn')) {
+                        handleChatQuery(`Analyze '${comm}' (PID ${pid}, trust=${Math.round(entry.trust)}). Is it safe or malicious? What should I do?`, pid);
+                        // Switch to security view to see chat
+                        document.querySelector('[data-view="security"]')?.click();
+                        document.querySelector('.tab-btn[data-tab="chat"]')?.click();
+                    }
+                });
+            });
+
+            $tbody.appendChild(tr);
+        });
+    }
+
     // ---- Process Table ----
     function renderTrustScores() {
         let entries = Object.values(state.trustScores);
@@ -629,17 +847,18 @@
 
         visible.forEach(entry => {
             const tier = getTrustTier(entry.trust);
-            const status = entry.paused ? 'paused' : (entry.status || (entry.trust > 75 ? 'known' : 'unknown'));
+            const isKilled = entry.killed;
+            const status = isKilled ? 'killed' : (entry.paused ? 'paused' : (entry.status || (entry.trust > 75 ? 'known' : 'unknown')));
             const isPaused = status === 'paused' || entry.paused;
             const isKnown = status === 'known';
 
             const statusEmoji = {
-                'known': '🟢', 'unknown': '🟡', 'suspicious': '🔴', 'paused': '⏸'
+                'known': '🟢', 'unknown': '🟡', 'suspicious': '🔴', 'paused': '⏸', 'killed': '☠️'
             }[status] || '🟡';
 
             const row = document.createElement('div');
-            row.className = `process-row ${isPaused ? 'row-paused' : ''} ${status === 'suspicious' ? 'row-suspicious' : ''}`;
-            row.title = "Click to inspect process details";
+            row.className = `process-row ${isPaused ? 'row-paused' : ''} ${status === 'suspicious' ? 'row-suspicious' : ''} ${isKilled ? 'row-killed' : ''}`;
+            row.title = isKilled ? 'Process terminated' : 'Click to inspect process details';
 
             row.innerHTML = `
                 <div class="process-info">
@@ -709,7 +928,15 @@
                 killBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     if (!confirm(`SIGKILL '${entry.comm}' (PID ${entry.pid})?\nThis will immediately terminate the process.`)) return;
+                    // Mark as killed immediately so UI shows dead state
+                    if (state.trustScores[entry.pid]) {
+                        state.trustScores[entry.pid].killed = true;
+                        state.trustScores[entry.pid].status = 'killed';
+                    }
+                    renderTrustScores();
                     const result = await killProcess(entry.pid, entry.comm);
+                    // Remove from state after 8s fade animation
+                    setTimeout(() => { delete state.trustScores[entry.pid]; renderTrustScores(); }, 8000);
                     await fetchPausedProcesses();
                     await fetchActionLog();
                     appendChatMessage('ai', result ? (result.message || `💀 PID ${entry.pid} killed.`) : `⚠️ Kill failed for PID ${entry.pid}`);

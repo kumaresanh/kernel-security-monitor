@@ -837,8 +837,12 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		}
 
 		var req struct {
-			Query string `json:"query"`
-			PID   uint32 `json:"pid,omitempty"`
+			Query   string `json:"query"`
+			PID     uint32 `json:"pid,omitempty"`
+			History []struct {
+				Role string `json:"role"` // "user" or "ai"
+				Text string `json:"text"`
+			} `json:"history,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -1056,6 +1060,21 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		)
 
 		if narrator != nil {
+			// Build conversation history context for the LLM
+			var historyCtx string
+			if len(req.History) > 0 {
+				historyCtx = "\nCONVERSATION HISTORY (last exchanges, use this to answer follow-up questions):\n"
+				for _, h := range req.History {
+					if h.Role == "user" {
+						historyCtx += fmt.Sprintf("  USER: %s\n", h.Text)
+					} else {
+						historyCtx += fmt.Sprintf("  AI: %s\n", h.Text)
+					}
+				}
+				historyCtx += "\n"
+			}
+			prompt = strings.Replace(prompt, "QUESTION: "+query, historyCtx+"QUESTION: "+query, 1)
+
 			llmResponse, err := narrator.QueryCopilot(r.Context(), prompt)
 			if err != nil || llmResponse == "" {
 				json.NewEncoder(w).Encode(map[string]string{
@@ -1063,6 +1082,29 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				})
 				return
 			}
+
+			// Persist Q&A to session_analysis.jsonl for cross-session knowledge
+			go func(q, a string) {
+				type sessionEntry struct {
+					Timestamp string `json:"ts"`
+					Query     string `json:"q"`
+					Answer    string `json:"a"`
+					Mode      string `json:"mode"`
+				}
+				e := sessionEntry{
+					Timestamp: time.Now().Format(time.RFC3339),
+					Query:     q,
+					Answer:    a,
+					Mode:      string(respEngine.GetMode()),
+				}
+				b, _ := json.Marshal(e)
+				f, err := os.OpenFile("data/session_analysis.jsonl", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+				if err == nil {
+					defer f.Close()
+					f.Write(append(b, '\n'))
+				}
+			}(query, llmResponse)
+
 			json.NewEncoder(w).Encode(map[string]string{"response": llmResponse})
 		} else {
 			json.NewEncoder(w).Encode(map[string]string{
