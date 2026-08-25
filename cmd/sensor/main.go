@@ -999,6 +999,80 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			return
 		}
 
+		// ── 8. SHOW CHAT HISTORY (reads from session_analysis.jsonl) ─────────
+		if strings.Contains(lowerQuery, "show history") || strings.Contains(lowerQuery, "previous conversation") ||
+			strings.Contains(lowerQuery, "what did i ask") || strings.Contains(lowerQuery, "last conversation") ||
+			strings.Contains(lowerQuery, "previous commands") || strings.Contains(lowerQuery, "chat history") {
+
+			// First show current-session history from request
+			if len(req.History) > 0 {
+				var lines []string
+				for i, h := range req.History {
+					prefix := "👤 You"
+					if h.Role == "ai" { prefix = "🤖 AI" }
+					text := h.Text
+					if len(text) > 120 { text = text[:120] + "..." }
+					lines = append(lines, fmt.Sprintf("%d. %s: %s", i+1, prefix, text))
+				}
+				reply := fmt.Sprintf("💬 **Current session history** (%d messages):\n%s", len(req.History), strings.Join(lines, "\n"))
+
+				// Also try to read from session file for past sessions
+				data, err := os.ReadFile("data/session_analysis.jsonl")
+				if err == nil && len(data) > 0 {
+					lines2 := strings.Split(strings.TrimSpace(string(data)), "\n")
+					if len(lines2) > 0 {
+						reply += fmt.Sprintf("\n\n📂 **Past sessions on disk** (%d saved Q&As in data/session_analysis.jsonl)\n", len(lines2))
+						start := len(lines2) - 5
+						if start < 0 { start = 0 }
+						for _, line := range lines2[start:] {
+							var e struct {
+								Timestamp string `json:"ts"`
+								Query     string `json:"q"`
+								Answer    string `json:"a"`
+							}
+							if json.Unmarshal([]byte(line), &e) == nil {
+								ans := e.Answer
+								if len(ans) > 80 { ans = ans[:80] + "..." }
+								reply += fmt.Sprintf("• [%s] Q: %s\n  → %s\n", e.Timestamp[:16], e.Query, ans)
+							}
+						}
+					}
+				}
+				json.NewEncoder(w).Encode(map[string]string{"response": reply})
+				return
+			}
+
+			// No in-session history — read from file
+			data, err := os.ReadFile("data/session_analysis.jsonl")
+			if err != nil || len(data) == 0 {
+				json.NewEncoder(w).Encode(map[string]string{"response": "📂 No conversation history saved yet. History is stored in data/session_analysis.jsonl after each AI Q&A session."})
+				return
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			var histLines []string
+			start := len(lines) - 10
+			if start < 0 { start = 0 }
+			for i, line := range lines[start:] {
+				var e struct {
+					Timestamp string `json:"ts"`
+					Query     string `json:"q"`
+					Answer    string `json:"a"`
+				}
+				if json.Unmarshal([]byte(line), &e) == nil {
+					ans := e.Answer
+					if len(ans) > 100 { ans = ans[:100] + "..." }
+					histLines = append(histLines, fmt.Sprintf("%d. [%s] Q: %s\n   → %s", i+1, e.Timestamp[:16], e.Query, ans))
+				}
+			}
+			if len(histLines) == 0 {
+				json.NewEncoder(w).Encode(map[string]string{"response": "📂 No parseable history found in data/session_analysis.jsonl."})
+				return
+			}
+			reply := fmt.Sprintf("📂 **Last %d conversations from disk:**\n%s", len(histLines), strings.Join(histLines, "\n\n"))
+			json.NewEncoder(w).Encode(map[string]string{"response": reply})
+			return
+		}
+
 		// ── 8. SIMPLE GREETINGS ─────────────────────────────────────────────
 		if lowerQuery == "hi" || lowerQuery == "hello" || lowerQuery == "hey" || lowerQuery == "help" {
 			paused := respEngine.GetPausedProcesses()
@@ -1044,37 +1118,48 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				d.PID, d.Comm, d.TrustScore, d.Status, d.Action, d.TechniqueID)
 		}
 
+		// Build conversation history section (placed FIRST so model reads it before security context)
+		var historySection string
+		if len(req.History) > 0 {
+			historySection = "CONVERSATION HISTORY (use this to answer follow-up questions; the USER may refer to what was said before):\n"
+			// Only include last 8 exchanges to save tokens
+			histStart := 0
+			if len(req.History) > 16 { histStart = len(req.History) - 16 }
+			for _, h := range req.History[histStart:] {
+				if h.Role == "user" {
+					historySection += fmt.Sprintf("  USER: %s\n", h.Text)
+				} else {
+					text := h.Text
+					if len(text) > 200 { text = text[:200] + "..." } // trim long AI replies
+					historySection += fmt.Sprintf("  AI: %s\n", text)
+				}
+			}
+			historySection += "\n"
+		} else {
+			historySection = "CONVERSATION HISTORY: None yet — this is the first message in this session.\n\n"
+		}
+
 		prompt := fmt.Sprintf(
-			"You are Kernel Security Monitor AI — a Linux kernel security monitor using eBPF. Answer DIRECTLY and CONCISELY.\n\n"+
-				"CURRENT STATE:\n"+
+			"%s"+ // history FIRST — model attends to it before security context
+				"You are Kernel Security Monitor AI — a Linux kernel security expert using eBPF. "+
+				"You are also a helpful general assistant. Answer questions DIRECTLY and ACCURATELY.\n"+
+				"IMPORTANT RULES:\n"+
+				"1. If asked about math, programming, or general topics — answer them CORRECTLY and directly.\n"+
+				"2. If asked what was said before — ONLY use the CONVERSATION HISTORY above. NEVER fabricate previous conversations.\n"+
+				"3. For security questions, use the CURRENT STATE below.\n"+
+				"4. If a process is a known Linux system tool (dwmblocks, st, pipewire, udev-worker, etc.) say SAFE immediately.\n"+
+				"5. Do NOT say 'I could not find info about PID X' — say 'PID X is not in my current telemetry window'.\n\n"+
+				"CURRENT SYSTEM STATE:\n"+
 				"- Mode: %s (observe=log only, pause=SIGSTOP suspicious, enforce=SIGKILL threats)\n"+
-				"- Paused processes (SIGSTOP'd, awaiting user):\n%s"+
+				"- Paused processes (SIGSTOP'd):\n%s"+
 				"- Recent user actions:\n%s"+
 				"- Recent suspicious decisions:\n%s\n"+
-				"%s"+
-				"QUESTION: %s\n\n"+
-				"RULES: Be direct. If a process is a known Linux system tool (dwmblocks, st, logger, pipewire, udev-worker, libuv-worker, etc.) say it's SAFE immediately. "+
-				"Only flag processes with CLEAR malicious behavior (C2 callbacks, staging scripts, cron modification). "+
-				"Do NOT say 'I couldn't find info about PID X' if the process isn't in the list — instead say 'PID X is not in my current telemetry window, likely already exited or trusted.'",
-			string(respEngine.GetMode()), pausedCtx, actionCtx, contextStr, pidContextStr, query,
+				"%s"+ // PID context if specific PID was provided
+				"QUESTION: %s",
+			historySection, string(respEngine.GetMode()), pausedCtx, actionCtx, contextStr, pidContextStr, query,
 		)
 
 		if narrator != nil {
-			// Build conversation history context for the LLM
-			var historyCtx string
-			if len(req.History) > 0 {
-				historyCtx = "\nCONVERSATION HISTORY (last exchanges, use this to answer follow-up questions):\n"
-				for _, h := range req.History {
-					if h.Role == "user" {
-						historyCtx += fmt.Sprintf("  USER: %s\n", h.Text)
-					} else {
-						historyCtx += fmt.Sprintf("  AI: %s\n", h.Text)
-					}
-				}
-				historyCtx += "\n"
-			}
-			prompt = strings.Replace(prompt, "QUESTION: "+query, historyCtx+"QUESTION: "+query, 1)
-
 			llmResponse, err := narrator.QueryCopilot(r.Context(), prompt)
 			if err != nil || llmResponse == "" {
 				json.NewEncoder(w).Encode(map[string]string{
