@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Kernel Security Monitor — eBPF Kernel Process Security with AI Copilot">
+    <meta name="description" content="Kernel Security Monitor — eBPF Kernel Process Security with AI Copilot & Provenance Graph">
     <title>Kernel Security Monitor :: Process Security</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,7 +33,7 @@
                     </svg>
                 </div>
                 <h1>KERNEL SECURITY MONITOR</h1>
-                <span class="header-subtitle">eBPF PROCESS MONITORING &amp; RESPONSE</span>
+                <span class="header-subtitle">eBPF PROCESS MONITORING &amp; THREAT INTELLIGENCE</span>
                 <button id="mode-toggle-btn" class="mode-btn observe" title="Click to cycle: Observe → Pause → Enforce">
                     <span class="mode-icon">🛡️</span>
                     <span id="mode-label">OBSERVE MODE</span>
@@ -77,17 +77,22 @@
 
         <!-- ===== TOP NAVIGATION BAR ===== -->
         <nav id="top-nav">
-            <button class="top-nav-btn active" data-view="security" id="nav-security">🛡️ SECURITY VIEW</button>
+            <button class="top-nav-btn active" data-view="security" id="nav-security">🛡️ SECURITY DASHBOARD</button>
             <button class="top-nav-btn" data-view="processes" id="nav-processes">
                 📊 PROCESS MONITOR <span class="nav-badge" id="htop-count">0</span>
             </button>
-            <button class="top-nav-btn" data-view="graph" id="nav-graph">🕸️ CAUSAL GRAPH</button>
+            <button class="top-nav-btn" data-view="patterns" id="nav-patterns">
+                🎯 ATTACK PATTERNS &amp; TREE <span class="nav-badge pattern-badge" id="pattern-count">0</span>
+            </button>
         </nav>
 
-        <!-- ===== VIEW: SECURITY ===== -->
+        <!-- ================================================================
+             VIEW 1: SECURITY DASHBOARD (Scrollable Main View)
+             ================================================================ -->
         <div id="view-security" class="main-view active">
-            <div id="main-grid">
-                <!-- Left: Process Classification -->
+            <!-- Top Dashboard Grid (3 Columns) -->
+            <div id="main-grid" class="security-grid">
+                <!-- Left Column: Process Classification -->
                 <div class="column" id="col-left">
                     <section class="panel" id="trust-panel">
                         <div class="panel-header">
@@ -100,36 +105,41 @@
                             </div>
                         </div>
                         <div class="panel-search-bar">
-                            <input type="text" id="process-search-input" placeholder="🔍 Search PID or name..." autocomplete="off" />
+                            <input type="text" id="process-search-input" placeholder="🔍 Search PID or name (e.g. chrome, 1234)..." autocomplete="off" />
                         </div>
                         <div class="panel-hint">Click any process row to open full details ↗</div>
-                        <div class="panel-body scrollable" id="trust-scores-container">
+                        <div class="panel-body scrollable panel-body-fixed" id="trust-scores-container">
                             <div class="empty-state">Waiting for sensor events...</div>
                         </div>
                     </section>
+                </div>
+
+                <!-- Center Column: Response Decisions & Live Event Stream -->
+                <div class="column" id="col-center">
                     <section class="panel" id="decisions-panel">
                         <div class="panel-header">
                             <h2>RESPONSE DECISIONS</h2>
                             <span class="panel-badge live">LIVE</span>
                         </div>
-                        <div class="panel-body scrollable" id="decisions-container">
+                        <div class="panel-body scrollable panel-body-half" id="decisions-container">
                             <div class="empty-state">No decisions yet...</div>
                         </div>
                     </section>
-                </div>
 
-                <!-- Center: Event Stream + AI -->
-                <div class="column" id="col-center">
                     <section class="panel" id="events-panel">
                         <div class="panel-header">
                             <h2>LIVE EVENT STREAM</h2>
                             <span class="panel-badge live">SSE</span>
                         </div>
-                        <div class="panel-body scrollable" id="events-container">
+                        <div class="panel-body scrollable panel-body-half" id="events-container">
                             <div class="empty-state">Connecting to event stream...</div>
                         </div>
                     </section>
-                    <section class="panel" id="narration-panel">
+                </div>
+
+                <!-- Right Column: AI Narration & Security Copilot -->
+                <div class="column" id="col-right">
+                    <section class="panel full-height" id="narration-panel">
                         <div class="panel-header">
                             <div class="tab-headers">
                                 <button class="tab-btn active" data-tab="narration">🧠 AI NARRATION</button>
@@ -138,27 +148,33 @@
                             </div>
                             <span class="panel-badge" id="llm-badge">LLM ACTIVE</span>
                         </div>
-                        <div class="panel-body tab-content active" id="tab-narration">
+
+                        <!-- Tab 1: Live Narration Feed -->
+                        <div class="panel-body tab-content active scrollable" id="tab-narration">
                             <div id="narration-container">
                                 <div class="empty-state"><span class="narration-icon">🧠</span>ATT&amp;CK-grounded AI narrative will appear for suspicious events.</div>
                             </div>
                         </div>
+
+                        <!-- Tab 2: Interactive AI Security Chat -->
                         <div class="panel-body tab-content" id="tab-chat">
                             <div id="chat-messages-container" class="chat-messages">
-                                <div class="chat-bubble ai"><strong>Kernel Security AI:</strong> Hello! Type <code>hi</code> for full command list.</div>
+                                <div class="chat-bubble ai"><strong>Kernel Security AI:</strong> Hello! Ask me anything about processes, MITRE techniques, or type <code>show paused</code> / <code>show history</code>.</div>
                             </div>
                             <div class="chat-quick-actions">
+                                <button class="quick-chip" data-q="show history">📂 History</button>
                                 <button class="quick-chip" data-q="show paused">⏸ Paused</button>
                                 <button class="quick-chip" data-q="show action log">📋 Log</button>
                                 <button class="quick-chip" data-q="block all below 30">🛡 Block&lt;30</button>
                                 <button class="quick-chip" data-q="Any suspicious activity right now?">⚠ Threats</button>
-                                <button class="quick-chip" data-q="hi">Help</button>
                             </div>
                             <form id="chat-form" class="chat-input-row">
-                                <input type="text" id="chat-input" placeholder="trust node / kill 1234 / resume 1234 / show paused" autocomplete="off" />
+                                <input type="text" id="chat-input" placeholder="Ask AI: 'Why is PID 1234 suspicious?' or 'trust python'..." autocomplete="off" />
                                 <button type="submit" id="chat-send-btn">Send</button>
                             </form>
                         </div>
+
+                        <!-- Tab 3: Action Log -->
                         <div class="panel-body tab-content scrollable" id="tab-action-log">
                             <div id="action-log-container">
                                 <div class="empty-state">No actions yet.</div>
@@ -166,31 +182,48 @@
                         </div>
                     </section>
                 </div>
-
-                <!-- Right: Mini Graph -->
-                <div class="column" id="col-right">
-                    <section class="panel full-height" id="graph-panel-mini">
-                        <div class="panel-header">
-                            <h2>CAUSAL GRAPH</h2>
-                            <div class="graph-legend">
-                                <span class="legend-item"><span class="dot process"></span>Process</span>
-                                <span class="legend-item"><span class="dot socket"></span>Network</span>
-                                <button id="reset-graph-btn" class="mini-btn">Reset View</button>
-                            </div>
-                        </div>
-                        <div class="panel-body graph-body" id="graph-container">
-                            <svg id="causal-graph"></svg>
-                        </div>
-                    </section>
-                </div>
             </div>
+
+            <!-- Bottom Section: Production-Grade Causal Provenance Graph -->
+            <section class="panel graph-section-panel" id="graph-section">
+                <div class="panel-header">
+                    <div class="graph-header-left">
+                        <h2>🕸️ CAUSAL PROVENANCE GRAPH (PRODUCTION SIEM / THREAT INTEL)</h2>
+                        <span class="graph-subtitle">Aggregated Process Provenance &amp; Attack Chains (Hairball-Filtered)</span>
+                    </div>
+                    <div class="graph-controls-bar">
+                        <div class="graph-filter-group">
+                            <button class="graph-filter-btn active" data-graph-filter="all">All Provenance</button>
+                            <button class="graph-filter-btn" data-graph-filter="threats">⚠ Threats &amp; Network Only</button>
+                            <button class="graph-filter-btn" data-graph-filter="hierarchy">🌲 Parent-Child Trees</button>
+                        </div>
+                        <div class="graph-legend">
+                            <span class="legend-item"><span class="dot process"></span>Process</span>
+                            <span class="legend-item"><span class="dot parent"></span>Parent Daemon</span>
+                            <span class="legend-item"><span class="dot threat"></span>Threat / Suspicious</span>
+                            <span class="legend-item"><span class="dot socket"></span>Network Socket</span>
+                        </div>
+                        <button id="reset-graph-btn" class="mini-btn">Reset View</button>
+                    </div>
+                </div>
+                <div class="panel-body graph-body graph-body-main" id="graph-container">
+                    <svg id="causal-graph"></svg>
+                    <div class="graph-overlay-stats" id="graph-stats-overlay">
+                        <span>Nodes: <strong id="g-node-count">0</strong></span>
+                        <span>Edges: <strong id="g-edge-count">0</strong></span>
+                        <span>Active Threats: <strong id="g-threat-count" style="color:#ef4444">0</strong></span>
+                    </div>
+                </div>
+            </section>
         </div>
 
-        <!-- ===== VIEW: PROCESS MONITOR (htop-like) ===== -->
+        <!-- ================================================================
+             VIEW 2: PROCESS MONITOR (htop-like)
+             ================================================================ -->
         <div id="view-processes" class="main-view">
             <section class="panel htop-panel">
                 <div class="panel-header">
-                    <h2>📊 PROCESS MONITOR — All Tracked Processes</h2>
+                    <h2>📊 PROCESS MONITOR — Complete Process Inspection</h2>
                     <div class="htop-controls">
                         <input type="text" id="htop-search" placeholder="🔍 Filter by name or PID..." autocomplete="off" />
                         <select id="htop-sort" class="htop-select">
@@ -200,7 +233,7 @@
                             <option value="comm">Sort: Name A-Z</option>
                             <option value="status">Sort: Status</option>
                         </select>
-                        <span class="htop-live-badge">🟢 LIVE</span>
+                        <span class="htop-live-badge">🟢 LIVE TELEMETRY</span>
                     </div>
                 </div>
                 <div class="htop-table-wrapper">
@@ -224,21 +257,37 @@
             </section>
         </div>
 
-        <!-- ===== VIEW: CAUSAL GRAPH fullscreen ===== -->
-        <div id="view-graph" class="main-view">
-            <section class="panel graph-fullscreen-panel">
-                <div class="panel-header">
-                    <h2>🕸️ CAUSAL PROVENANCE GRAPH</h2>
-                    <div class="graph-legend">
-                        <span class="legend-item"><span class="dot process"></span>Process</span>
-                        <span class="legend-item"><span class="dot socket"></span>Network</span>
-                        <button id="reset-graph-full-btn" class="mini-btn">Reset View</button>
+        <!-- ================================================================
+             VIEW 3: ATTACK PATTERNS & PROCESS TREE (Deep Provenance)
+             ================================================================ -->
+        <div id="view-patterns" class="main-view">
+            <div class="patterns-grid">
+                <!-- Left: Identified Attack Patterns Feed -->
+                <section class="panel" id="attack-patterns-panel">
+                    <div class="panel-header">
+                        <h2>🎯 IDENTIFIED ATTACK PATTERNS &amp; MITRE ATT&amp;CK</h2>
+                        <span class="panel-badge alert-badge" id="attack-patterns-live-badge">0 DETECTED</span>
                     </div>
-                </div>
-                <div class="panel-body graph-body graph-body-fullscreen" id="graph-container-full">
-                    <svg id="causal-graph-full"></svg>
-                </div>
-            </section>
+                    <div class="panel-body scrollable" id="attack-patterns-container">
+                        <div class="empty-state">No attack patterns identified yet. Running system is clean.</div>
+                    </div>
+                </section>
+
+                <!-- Right: Full Hierarchical Process Tree (Parent -> Subprocesses -> Accesses) -->
+                <section class="panel" id="process-tree-panel">
+                    <div class="panel-header">
+                        <h2>🌲 HIERARCHICAL PROCESS PROVENANCE TREE</h2>
+                        <div class="tree-controls">
+                            <input type="text" id="tree-search" placeholder="🔍 Search tree (e.g. chrome, dwm, bash)..." autocomplete="off" />
+                            <button id="tree-expand-btn" class="mini-btn">Expand All</button>
+                            <button id="tree-collapse-btn" class="mini-btn">Collapse All</button>
+                        </div>
+                    </div>
+                    <div class="panel-body scrollable" id="process-tree-container">
+                        <div class="empty-state">Loading process hierarchy tree...</div>
+                    </div>
+                </section>
+            </div>
         </div>
 
         <!-- Footer -->
@@ -248,7 +297,7 @@
                 🛡️ <strong>OBSERVE</strong> — Monitor only.
                 ⏸ <strong>PAUSE</strong> — SIGSTOP suspicious until YOU approve.
                 ⚡ <strong>ENFORCE</strong> — Auto-kill confirmed threats.
-                | <strong>NAV:</strong> Use top tabs to switch views. Click any process row for full details.
+                | <strong>VIEWS:</strong> Use top navigation tabs to switch between Dashboard, htop Process Monitor, and Attack Patterns Tree.
             </div>
         </footer>
 
@@ -315,7 +364,7 @@
                     </div>
                     <!-- Control Actions -->
                     <div class="insp-actions-section">
-                        <div class="insp-section-title">CONTROL ACTIONS:</div>
+                        <div class="insp-section-title">SOAR CONTROL ACTIONS:</div>
                         <div class="insp-actions" id="insp-actions-container"></div>
                     </div>
                 </div>

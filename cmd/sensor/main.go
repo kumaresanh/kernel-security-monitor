@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kernel-security-monitor/ksm/internal/checkpoint"
+	"github.com/kernel-security-monitor/ksm/internal/db"
 	"github.com/kernel-security-monitor/ksm/internal/graph"
 	"github.com/kernel-security-monitor/ksm/internal/narration"
 	"github.com/kernel-security-monitor/ksm/internal/response"
@@ -192,6 +193,9 @@ func main() {
 		}
 	}
 
+	// Initialize Unified Persistent Database (stores processes, provenance, attack patterns, events, conversations)
+	database := db.NewStore(*flagDataDir)
+
 	// SSE hub for dashboard streaming
 	sseHub := newSSEHub()
 
@@ -212,11 +216,11 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		processEvents(ctx, eventCh, cg, featureExtractor, respEngine, eventLog, narrator, sseHub, logger)
+		processEvents(ctx, eventCh, cg, featureExtractor, respEngine, eventLog, database, narrator, sseHub, logger)
 	}()
 
 	// HTTP server for dashboard (Priority 4)
-	mux := setupHTTP(cg, respEngine, eventLog, narrator, sseHub, logger)
+	mux := setupHTTP(cg, respEngine, eventLog, database, narrator, sseHub, logger)
 	server := &http.Server{Addr: *flagListenAddr, Handler: mux}
 
 	wg.Add(1)
@@ -267,6 +271,7 @@ func processEvents(
 	fe *graph.FeatureExtractor,
 	respEngine *response.Engine,
 	eventLog *response.EventLog,
+	database *db.Store,
 	narrator *narration.Narrator,
 	sseHub *sseHub,
 	logger *slog.Logger,
@@ -314,6 +319,11 @@ func processEvents(
 
 			processedCount++
 
+			// Persist every raw event to DB engine
+			if database != nil {
+				database.RecordEvent(evt.PID, evt.PPID, evt.Comm, evt.TypeStr, evt.Payload, evt.DstIP, evt.DstPort, int64(evt.RetVal))
+			}
+
 			// 1. Update causal graph (with noise suppression for read-only libs)
 			procNode := cg.AddProcessNode(evt.PID, evt.PPID, evt.Comm)
 
@@ -354,6 +364,9 @@ func processEvents(
 			// 2. Skip scoring for known/whitelisted processes
 			if respEngine.IsTrusted(evt.Comm, evt.PID) {
 				fe.RecordSyscall(evt.PID, evt.TypeStr)
+				if database != nil {
+					database.RecordDecision(evt.PID, evt.Comm, 95.0, string(response.StatusKnown), "known_safe", "", "", 0.95)
+				}
 				if time.Since(lastSSEBroadcast) >= sseBroadcastInterval {
 					lastSSEBroadcast = time.Now()
 					sseHub.broadcast(sseEvent{
@@ -411,6 +424,9 @@ func processEvents(
 
 			// 8. Log the decision
 			eventLog.LogDecision(decision)
+			if database != nil {
+				database.RecordDecision(decision.PID, decision.Comm, decision.TrustScore, string(decision.Status), string(decision.Action), decision.TechniqueID, decision.Technique, decision.ConformalPVal)
+			}
 
 			// 9. LLM narration (throttled: per-PID cooldown + global rate limit)
 			if decision.Tier != response.TierLow && decision.Status != response.StatusKnown && narrator != nil {
@@ -512,7 +528,7 @@ func callScorer(client *http.Client, addr string, pid uint32, features graph.Fea
 
 // ---- HTTP Handlers ----
 
-func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *response.EventLog, narrator *narration.Narrator, hub *sseHub, logger *slog.Logger) *http.ServeMux {
+func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *response.EventLog, database *db.Store, narrator *narration.Narrator, hub *sseHub, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	dashboardDir := "dashboard"
@@ -525,9 +541,44 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 		})
 	}
 
+	// ── Database & Process Tree API ──────────────────────────────────────────
+	mux.HandleFunc("/api/db/tree", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if database != nil {
+			json.NewEncoder(w).Encode(database.GetProcessTree())
+		} else {
+			json.NewEncoder(w).Encode([]interface{}{})
+		}
+	})
+
+	mux.HandleFunc("/api/db/attack_patterns", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if database != nil {
+			json.NewEncoder(w).Encode(database.GetAttackPatterns())
+		} else {
+			json.NewEncoder(w).Encode([]interface{}{})
+		}
+	})
+
+	mux.HandleFunc("/api/db/graph", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if database != nil {
+			json.NewEncoder(w).Encode(database.GetProductionGraph())
+		} else {
+			json.NewEncoder(w).Encode(map[string]interface{}{"nodes": []interface{}{}, "edges": []interface{}{}})
+		}
+	})
+
 	mux.HandleFunc("/api/graph", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if database != nil {
+			json.NewEncoder(w).Encode(database.GetProductionGraph())
+			return
+		}
 		snapshot := cg.Snapshot()
 		if len(snapshot.Nodes) > 120 {
 			pruned := make(map[string]*graph.Node, 120)
@@ -1139,6 +1190,12 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 			historySection = "CONVERSATION HISTORY: None yet — this is the first message in this session.\n\n"
 		}
 
+		// Database telemetry search (provides grounded process & attack pattern history)
+		var dbTelemetryStr string
+		if database != nil {
+			dbTelemetryStr = "\n" + database.SearchTelemetry(query, req.PID) + "\n"
+		}
+
 		prompt := fmt.Sprintf(
 			"%s"+ // history FIRST — model attends to it before security context
 				"You are Kernel Security Monitor AI — a Linux kernel security expert using eBPF. "+
@@ -1146,7 +1203,7 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				"IMPORTANT RULES:\n"+
 				"1. If asked about math, programming, or general topics — answer them CORRECTLY and directly.\n"+
 				"2. If asked what was said before — ONLY use the CONVERSATION HISTORY above. NEVER fabricate previous conversations.\n"+
-				"3. For security questions, use the CURRENT STATE below.\n"+
+				"3. For security questions, use the CURRENT STATE and DATABASE TELEMETRY below.\n"+
 				"4. If a process is a known Linux system tool (dwmblocks, st, pipewire, udev-worker, etc.) say SAFE immediately.\n"+
 				"5. Do NOT say 'I could not find info about PID X' — say 'PID X is not in my current telemetry window'.\n\n"+
 				"CURRENT SYSTEM STATE:\n"+
@@ -1155,8 +1212,9 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				"- Recent user actions:\n%s"+
 				"- Recent suspicious decisions:\n%s\n"+
 				"%s"+ // PID context if specific PID was provided
+				"%s\n"+ // Full DB Telemetry
 				"QUESTION: %s",
-			historySection, string(respEngine.GetMode()), pausedCtx, actionCtx, contextStr, pidContextStr, query,
+			historySection, string(respEngine.GetMode()), pausedCtx, actionCtx, contextStr, pidContextStr, dbTelemetryStr, query,
 		)
 
 		if narrator != nil {
@@ -1168,27 +1226,10 @@ func setupHTTP(cg *graph.CausalGraph, respEngine *response.Engine, eventLog *res
 				return
 			}
 
-			// Persist Q&A to session_analysis.jsonl for cross-session knowledge
-			go func(q, a string) {
-				type sessionEntry struct {
-					Timestamp string `json:"ts"`
-					Query     string `json:"q"`
-					Answer    string `json:"a"`
-					Mode      string `json:"mode"`
-				}
-				e := sessionEntry{
-					Timestamp: time.Now().Format(time.RFC3339),
-					Query:     q,
-					Answer:    a,
-					Mode:      string(respEngine.GetMode()),
-				}
-				b, _ := json.Marshal(e)
-				f, err := os.OpenFile("data/session_analysis.jsonl", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-				if err == nil {
-					defer f.Close()
-					f.Write(append(b, '\n'))
-				}
-			}(query, llmResponse)
+			// Persist Q&A to database and session_analysis.jsonl
+			if database != nil {
+				database.RecordConversation(query, llmResponse, *flagLLMModel, string(respEngine.GetMode()), req.PID)
+			}
 
 			json.NewEncoder(w).Encode(map[string]string{"response": llmResponse})
 		} else {

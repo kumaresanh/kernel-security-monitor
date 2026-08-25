@@ -1378,347 +1378,353 @@ body {
 /* ================================================================
    MULTI-VIEW LAYOUT
    ================================================================ */
+/* ================================================================
+   MULTI-VIEW LAYOUT (Fully Scrollable Dashboard)
+   ================================================================ */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    background: var(--bg-primary);
+}
+
+#app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
 .main-view {
     display: none;
     flex-direction: column;
-    padding: 12px;
+    padding: 14px;
     flex: 1;
-    min-height: 0;
 }
 
 .main-view.active {
     display: flex;
 }
 
-/* Security view keeps the 3-col grid */
+/* Security View: naturally flowing top grid + bottom full-width graph */
 #view-security {
-    padding: 0;
+    padding: 14px;
+    display: none;
+    flex-direction: column;
+    gap: 16px;
 }
 
 #view-security.active {
-    display: block;
-}
-
-#view-processes.active {
     display: flex;
-    flex-direction: column;
-    padding: 12px;
-    height: calc(100vh - 180px);
 }
 
-#view-graph.active {
-    display: flex;
-    flex-direction: column;
-    padding: 12px;
-    height: calc(100vh - 180px);
-}
-
-/* ================================================================
-   PROCESS ROW — Bigger, fixed overlap, hover-stable
-   ================================================================ */
-.process-row {
+.security-grid {
     display: grid;
-    grid-template-columns: minmax(120px,1.8fr) 80px 60px 36px 90px;
-    align-items: center;
-    gap: 6px;
-    padding: 9px 10px;
-    border-radius: var(--radius-sm);
-    font-size: 11.5px;
-    font-family: var(--font-mono);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-    transition: background 0.1s ease;
-    cursor: pointer;
-    min-height: 54px;
-    user-select: none;
+    grid-template-columns: 340px 1.4fr 380px;
+    gap: 14px;
+    min-height: 480px;
 }
 
-.process-row:hover {
-    background: var(--bg-card-hover);
-    outline: 1px solid rgba(99, 102, 241, 0.25);
+.panel-body-fixed {
+    height: 400px;
+    overflow-y: auto;
 }
 
-.process-info {
+.panel-body-half {
+    height: 185px;
+    overflow-y: auto;
+}
+
+/* Bottom Production-Grade Graph Section */
+.graph-section-panel {
+    margin-top: 4px;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.graph-header-left {
     display: flex;
     flex-direction: column;
-    min-width: 0;
     gap: 2px;
 }
 
-.process-comm {
-    font-weight: 600;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 12px;
-}
-
-.process-pid {
-    font-size: 9.5px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-}
-
-.process-actions {
-    display: flex;
-    gap: 3px;
-    flex-shrink: 0;
-}
-
-/* Killed process state */
-.process-row.row-killed {
-    opacity: 0.4;
-    filter: grayscale(0.8);
-    animation: fadeRowOut 8s forwards;
-}
-
-@keyframes fadeRowOut {
-    0% { opacity: 0.4; }
-    80% { opacity: 0.2; }
-    100% { opacity: 0; height: 0; padding: 0; overflow: hidden; }
-}
-
-/* Panel hint text */
-.panel-hint {
+.graph-subtitle {
     font-size: 9px;
-    color: var(--accent-cyan);
-    padding: 3px 10px 0;
-    opacity: 0.7;
+    color: var(--text-muted);
     font-family: var(--font-mono);
+    letter-spacing: 0.04em;
 }
 
-/* ================================================================
-   HTOP TABLE
-   ================================================================ */
-.htop-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-}
-
-.htop-panel .panel-body {
-    flex: 1;
-    overflow: hidden;
-    padding: 0;
-}
-
-.htop-controls {
+.graph-controls-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
 }
 
-.htop-controls input {
+.graph-filter-group {
+    display: flex;
+    gap: 4px;
     background: var(--bg-card);
+    padding: 3px;
+    border-radius: 6px;
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 5px 10px;
-    width: 220px;
 }
 
-.htop-select {
-    background: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
+.graph-filter-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 5px 8px;
-    cursor: pointer;
-}
-
-.htop-live-badge {
-    font-size: 11px;
-    color: var(--trust-high);
-    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 600;
-}
-
-.htop-table-wrapper {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: auto;
-}
-
-.htop-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-mono);
-    font-size: 12px;
-}
-
-.htop-th {
-    position: sticky;
-    top: 0;
-    background: var(--bg-secondary);
-    color: var(--text-muted);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    padding: 8px 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--border-subtle);
-    white-space: nowrap;
-    z-index: 1;
-    user-select: none;
-}
-
-.htop-th.sortable { cursor: pointer; }
-.htop-th.sortable:hover { color: var(--accent-cyan); }
-
-.htop-bar-col { width: 100px; }
-.htop-actions-col { width: 160px; }
-
-.htop-tr {
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    padding: 3px 8px;
+    border-radius: 4px;
     cursor: pointer;
-    transition: background 0.1s ease;
+    transition: all 0.15s ease;
 }
 
-.htop-tr:hover { background: var(--bg-card-hover); }
-
-.htop-tr.htop-row-suspicious { background: rgba(239, 68, 68, 0.05); }
-.htop-tr.htop-row-suspicious:hover { background: rgba(239, 68, 68, 0.12); }
-.htop-tr.htop-row-paused { background: rgba(99, 102, 241, 0.07); }
-.htop-tr.htop-row-known { opacity: 0.75; }
-
-.htop-td {
-    padding: 7px 10px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 180px;
+.graph-filter-btn:hover {
     color: var(--text-primary);
-    vertical-align: middle;
 }
 
-.htop-td-pid { color: var(--text-secondary); font-size: 11px; }
-.htop-td-ppid { color: var(--text-muted); font-size: 11px; }
-.htop-td-comm { font-weight: 600; font-size: 12px; }
-.htop-td-trust { font-weight: 700; font-size: 12px; }
-.htop-td-trust.trusted { color: var(--trust-high); }
-.htop-td-trust.suspicious { color: var(--trust-medium); }
-.htop-td-trust.hostile { color: var(--trust-low); }
+.graph-filter-btn.active {
+    background: var(--accent-indigo);
+    color: #fff;
+}
 
-.htop-bar-cell { width: 100px; padding: 7px 10px; }
-
-.htop-bar {
-    width: 90px;
-    height: 6px;
-    background: rgba(255,255,255,0.08);
-    border-radius: 4px;
+.graph-body-main {
+    height: 520px;
+    position: relative;
+    background: #080c16;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
     overflow: hidden;
 }
 
-.htop-bar-fill {
-    height: 100%;
-    border-radius: 4px;
-    transition: width 0.5s ease;
-}
-.htop-bar-fill.trusted { background: var(--trust-high); }
-.htop-bar-fill.suspicious { background: var(--trust-medium); }
-.htop-bar-fill.hostile { background: var(--trust-low); }
-
-.htop-actions-td {
-    padding: 4px 8px;
-    white-space: nowrap;
-}
-
-.htop-empty {
-    text-align: center;
-    padding: 40px;
-    color: var(--text-muted);
-    font-size: 12px;
-}
-
-/* ================================================================
-   GRAPH FULLSCREEN VIEW
-   ================================================================ */
-.graph-fullscreen-panel {
-    flex: 1;
+.graph-overlay-stats {
+    position: absolute;
+    bottom: 12px;
+    left: 14px;
+    background: rgba(17, 24, 39, 0.85);
+    border: 1px solid var(--border-subtle);
+    backdrop-filter: blur(8px);
+    border-radius: 6px;
+    padding: 6px 12px;
     display: flex;
-    flex-direction: column;
-    height: 100%;
+    gap: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
 }
 
-.graph-body-fullscreen {
-    flex: 1;
-    height: calc(100vh - 240px) !important;
-}
+/* Legend items */
+.legend-item .dot.parent { background: #8b5cf6; }
+.legend-item .dot.threat { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
 
 /* ================================================================
-   INSPECTOR MODAL — Two-column layout with threat details
+   VIEW 3: ATTACK PATTERNS & TREE
    ================================================================ */
-.inspector-card {
-    max-width: 640px;
-    width: 95vw;
-}
-
-.insp-two-col {
+.patterns-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 12px;
+    grid-template-columns: 420px 1fr;
+    gap: 14px;
+    min-height: calc(100vh - 200px);
 }
 
-.insp-section {
+.pattern-badge {
+    background: rgba(239, 68, 68, 0.25);
+    color: #ef4444;
+    border-color: #ef4444;
+}
+
+.attack-pattern-card {
+    background: var(--bg-card);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-left: 4px solid #ef4444;
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    font-family: var(--font-mono);
+    transition: all 0.15s ease;
+}
+
+.attack-pattern-card:hover {
+    background: var(--bg-card-hover);
+    border-color: #ef4444;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+}
+
+.pattern-header {
     display: flex;
-    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.pattern-tech-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(239, 68, 68, 0.18);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.pattern-time {
+    font-size: 9px;
+    color: var(--text-muted);
+}
+
+.pattern-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.pattern-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 8px;
+}
+
+.pattern-evidence {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.evidence-chip {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--accent-cyan);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+}
+
+.pattern-actions {
+    display: flex;
     gap: 6px;
 }
 
-.insp-bar {
-    width: 80px;
-    height: 6px;
+/* Process Hierarchy Tree */
+.tree-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
-.insp-reason-val {
+.tree-controls input {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 4px 8px;
+    width: 220px;
+}
+
+.tree-root-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+}
+
+.tree-root-card.has-threats {
+    border-color: rgba(239, 68, 68, 0.5);
+    border-left: 4px solid #ef4444;
+}
+
+.tree-node-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+}
+
+.tree-node-row:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tree-node-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tree-toggle-icon {
     font-size: 10px;
-    color: var(--text-secondary);
-    line-height: 1.4;
+    color: var(--accent-indigo);
+    cursor: pointer;
+    user-select: none;
+    width: 14px;
 }
 
-@media (max-width: 600px) {
-    .insp-two-col { grid-template-columns: 1fr; }
+.tree-comm {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text-primary);
 }
 
-/* ================================================================
-   MAIN GRID — 3-col for security view (override old)
-   ================================================================ */
-#view-security #main-grid {
-    display: grid;
-    grid-template-columns: 320px 1fr 320px;
-    gap: 12px;
-    padding: 12px;
-    height: calc(100vh - 220px);
-    min-height: 0;
+.tree-pid-badge {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 1px 5px;
+    border-radius: 3px;
 }
 
-@media (max-width: 1400px) {
-    #view-security #main-grid {
-        grid-template-columns: 280px 1fr 280px;
-    }
+.tree-children-container {
+    padding-left: 22px;
+    margin-top: 4px;
+    border-left: 2px solid rgba(99, 102, 241, 0.2);
 }
 
-@media (max-width: 1100px) {
-    #view-security #main-grid {
-        grid-template-columns: 1fr 1fr;
-    }
-    #col-right { display: none; }
+.tree-access-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 6px 0 6px 20px;
+    font-size: 10px;
 }
 
-@media (max-width: 768px) {
-    #view-security #main-grid {
-        grid-template-columns: 1fr;
-    }
-    .top-nav-btn { font-size: 10px; padding: 6px 10px; }
+.tree-access-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(16, 185, 129, 0.08);
+    color: var(--trust-high);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    font-size: 9px;
+    max-width: max-content;
+}
+
+.tree-sock-tag {
+    background: rgba(6, 182, 212, 0.08);
+    color: var(--accent-cyan);
+    border-color: rgba(6, 182, 212, 0.2);
+}
+
+@media (max-width: 1300px) {
+    .security-grid { grid-template-columns: 300px 1.2fr 320px; }
+    .patterns-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 1000px) {
+    .security-grid { grid-template-columns: 1fr; }
+    .column { width: 100%; }
 }
