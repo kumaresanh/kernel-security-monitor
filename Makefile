@@ -87,6 +87,10 @@ demo:
 	@echo ">>> Running demo attack scenario..."
 	sudo bash scripts/demo_attack.sh
 
+live-demo:
+	@echo ">>> Running persistent live demo scenario..."
+	bash scripts/live_demo.sh
+
 test-criu-loop:
 	@echo ">>> Running CRIU flakiness test (10 iterations)..."
 	sudo bash scripts/test_criu_loop.sh
